@@ -1,859 +1,350 @@
-import React, { useState, useMemo, useEffect } from 'react';
-import { format, startOfMonth, endOfMonth, eachDayOfInterval, isWeekend, isSameMonth, isToday, parseISO, addMonths, subMonths, startOfWeek, endOfWeek, isBefore, isAfter, isEqual } from 'date-fns';
-import { Calculator, ChevronLeft, ChevronRight, DollarSign, Info, Trash2, X, User, CalendarDays, Plus, Briefcase, Clock, Edit2, Calendar, FileText, Download, Moon, Sun, Copy, ClipboardPaste, TrendingUp, Target, BarChart3 } from 'lucide-react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import {
+  format, startOfMonth, endOfMonth, eachDayOfInterval, isWeekend,
+  isSameMonth, isToday, parseISO, addMonths, subMonths,
+  startOfWeek, endOfWeek, isBefore, isAfter, isEqual,
+} from 'date-fns';
+import {
+  Calculator, ChevronLeft, ChevronRight, Info, Trash2, X,
+  User, CalendarDays, Plus, Briefcase, Edit2, Calendar,
+  FileText, Download, Moon, Sun, Copy, ClipboardPaste,
+  TrendingUp, Target, BarChart3, Repeat, Lightbulb, MessageSquare,
+  Zap, Clock,
+} from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, PieChart, Pie, Cell, Legend,
+} from 'recharts';
 
-const CPF_RATES = {
-  '55_and_below': { label: '55 and below', employer: 0.17, employee: 0.20 },
-  '55_to_60': { label: 'Above 55 to 60', employer: 0.16, employee: 0.18 },
-  '60_to_65': { label: 'Above 60 to 65', employer: 0.125, employee: 0.125 },
-  '65_to_70': { label: 'Above 65 to 70', employer: 0.09, employee: 0.075 },
-  'above_70': { label: 'Above 70', employer: 0.075, employee: 0.05 },
-};
+import { CPF_RATES, CPF_RATES_EFFECTIVE_DATE, calculateCpf, type AgeGroup } from './cpfRates';
+import {
+  type Job, type Shift, type ShiftTemplate, type RecurringRule,
+  type ViewTab, JOB_COLORS, getHexColor, SG_PUBLIC_HOLIDAYS,
+} from './types';
+import { calculateShiftHours, calcShiftGross, calcPayrollSummary, expandRecurringRule, hoursToGoal } from './utils';
 
-const SG_PUBLIC_HOLIDAYS: Record<string, string> = {
-  // 2025
-  '2025-01-01': "New Year's Day",
-  '2025-01-29': "Chinese New Year",
-  '2025-01-30': "Chinese New Year",
-  '2025-03-31': "Hari Raya Puasa",
-  '2025-04-18': "Good Friday",
-  '2025-05-01': "Labour Day",
-  '2025-05-12': "Vesak Day",
-  '2025-06-07': "Hari Raya Haji",
-  '2025-08-09': "National Day",
-  '2025-10-20': "Deepavali",
-  '2025-12-25': "Christmas Day",
-  // 2026
-  '2026-01-01': "New Year's Day",
-  '2026-02-17': "Chinese New Year",
-  '2026-02-18': "Chinese New Year",
-  '2026-03-20': "Hari Raya Puasa",
-  '2026-04-03': "Good Friday",
-  '2026-05-01': "Labour Day",
-  '2026-05-27': "Hari Raya Haji",
-  '2026-05-31': "Vesak Day",
-  '2026-06-01': "Vesak Day (Observed)",
-  '2026-08-09': "National Day",
-  '2026-08-10': "National Day (Observed)",
-  '2026-11-08': "Deepavali",
-  '2026-11-09': "Deepavali (Observed)",
-  '2026-12-25': "Christmas Day",
-};
-
-type AgeGroup = keyof typeof CPF_RATES;
-type PayrollCycleType = 'end_of_month' | 'end_of_event';
-type ViewTab = 'calendar' | 'monthly_income' | 'event_income' | 'dashboard';
-
-const JOB_COLORS = [
-  { id: 'red', bg: 'bg-red-500', border: 'border-red-200', text: 'text-red-700', lightBg: 'bg-red-50' },
-  { id: 'yellow', bg: 'bg-yellow-500', border: 'border-yellow-200', text: 'text-yellow-700', lightBg: 'bg-yellow-50' },
-  { id: 'orange', bg: 'bg-orange-500', border: 'border-orange-200', text: 'text-orange-700', lightBg: 'bg-orange-50' },
-  { id: 'green', bg: 'bg-green-500', border: 'border-green-200', text: 'text-green-700', lightBg: 'bg-green-50' },
-  { id: 'navy', bg: 'bg-blue-800', border: 'border-blue-300', text: 'text-blue-800', lightBg: 'bg-blue-50' },
-  { id: 'purple', bg: 'bg-purple-500', border: 'border-purple-200', text: 'text-purple-700', lightBg: 'bg-purple-50' },
-  { id: 'pink', bg: 'bg-pink-500', border: 'border-pink-200', text: 'text-pink-700', lightBg: 'bg-pink-50' },
-  { id: 'sky', bg: 'bg-sky-400', border: 'border-sky-200', text: 'text-sky-700', lightBg: 'bg-sky-50' },
-];
-
-const getHexColor = (colorId: string) => {
-  const map: Record<string, string> = {
-    'red': '#ef4444', 'yellow': '#eab308', 'orange': '#f97316',
-    'green': '#22c55e', 'navy': '#1e40af', 'purple': '#a855f7',
-    'pink': '#ec4899', 'sky': '#38bdf8',
-  };
-  return map[colorId] || '#6366f1';
-};
-
-interface Job {
-  id: string;
-  title: string;
-  colorId: string;
-  rates: {
-    weekday: number;
-    weekend: number;
-    publicHoliday: number;
-  };
-  payrollCycle: {
-    type: PayrollCycleType;
-    cutoffDay?: number; // 1-31 for end_of_month
-    endDate?: string; // YYYY-MM-DD for end_of_event
-  };
+// ── Storage helper ──────────────────────────────────────────────────────────
+function loadLS<T>(key: string, fallback: T): T {
+  try { const v = localStorage.getItem(key); return v ? (JSON.parse(v) as T) : fallback; }
+  catch { return fallback; }
 }
 
-interface Shift {
-  id: string;
-  jobId: string;
-  date: string; // YYYY-MM-DD
-  startTime: string; // HH:mm
-  endTime: string; // HH:mm
-  unpaidBreakHours: number;
-  isPublicHoliday: boolean;
-  allowance?: number;
-  deduction?: number;
-}
+const DEFAULT_JOB: Job = {
+  id: '1', title: 'Main Job', colorId: 'navy',
+  rates: { weekday: 12, weekend: 15, publicHoliday: 20 },
+  payrollCycle: { type: 'end_of_month', cutoffDay: 31 },
+};
 
 export default function App() {
-  const [currentDate, setCurrentDate] = useState(new Date());
-  const [activeTab, setActiveTab] = useState<ViewTab>('calendar');
-  
-  const [ageGroup, setAgeGroup] = useState<AgeGroup>(() => {
-    const saved = localStorage.getItem('payroll_ageGroup');
-    return (saved as AgeGroup) || '55_and_below';
-  });
-  
-  const [jobs, setJobs] = useState<Job[]>(() => {
-    const saved = localStorage.getItem('payroll_jobs');
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) {}
-    }
-    return [
-      {
-        id: '1',
-        title: 'Main Job',
-        colorId: 'navy',
-        rates: { weekday: 12, weekend: 15, publicHoliday: 20 },
-        payrollCycle: { type: 'end_of_month', cutoffDay: 31 }
-      }
-    ];
-  });
-  
-  const [shifts, setShifts] = useState<Shift[]>(() => {
-    const saved = localStorage.getItem('payroll_shifts');
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) {}
-    }
-    return [];
-  });
+  const [currentDate, setCurrentDate]   = useState(new Date());
+  const [activeTab, setActiveTab]       = useState<ViewTab>('calendar');
+  const [isDarkMode, setIsDarkMode]     = useState(() => loadLS('payroll_darkMode', false));
+  const [ageGroup, setAgeGroup]         = useState<AgeGroup>(() => loadLS('payroll_ageGroup', '55_and_below'));
+  const [jobs, setJobs]                 = useState<Job[]>(() => loadLS('payroll_jobs', [DEFAULT_JOB]));
+  const [shifts, setShifts]             = useState<Shift[]>(() => loadLS('payroll_shifts', []));
+  const [monthlyGoal, setMonthlyGoal]   = useState(() => loadLS('payroll_monthlyGoal', 1000));
+  const [templates, setTemplates]       = useState<ShiftTemplate[]>(() => loadLS('payroll_templates', []));
+  const [recurringRules, setRecurringRules] = useState<RecurringRule[]>(() => loadLS('payroll_recurring', []));
 
-  const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
-    const saved = localStorage.getItem('payroll_darkMode');
-    return saved === 'true';
-  });
+  const [selectedDate, setSelectedDate]               = useState<string | null>(null);
+  const [isShiftModalOpen, setIsShiftModalOpen]       = useState(false);
+  const [isJobModalOpen, setIsJobModalOpen]           = useState(false);
+  const [isDayPickerOpen, setIsDayPickerOpen]         = useState(false);
+  const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
+  const [isRecurringModalOpen, setIsRecurringModalOpen] = useState(false);
+  const [copiedShift, setCopiedShift]                 = useState<Partial<Shift> | null>(null);
+  const [editingJob, setEditingJob]                   = useState<Job | null>(null);
+  const [tempShift, setTempShift]                     = useState<Partial<Shift>>({});
+  const [editingTemplate, setEditingTemplate]         = useState<Partial<ShiftTemplate>>({});
+  const [editingRecurring, setEditingRecurring]       = useState<Partial<RecurringRule>>({});
 
-  const [copiedShift, setCopiedShift] = useState<Partial<Shift> | null>(null);
+  useEffect(() => { localStorage.setItem('payroll_darkMode', String(isDarkMode)); document.documentElement.classList.toggle('dark', isDarkMode); }, [isDarkMode]);
+  useEffect(() => { localStorage.setItem('payroll_ageGroup', ageGroup); }, [ageGroup]);
+  useEffect(() => { localStorage.setItem('payroll_jobs', JSON.stringify(jobs)); }, [jobs]);
+  useEffect(() => { localStorage.setItem('payroll_shifts', JSON.stringify(shifts)); }, [shifts]);
+  useEffect(() => { localStorage.setItem('payroll_monthlyGoal', String(monthlyGoal)); }, [monthlyGoal]);
+  useEffect(() => { localStorage.setItem('payroll_templates', JSON.stringify(templates)); }, [templates]);
+  useEffect(() => { localStorage.setItem('payroll_recurring', JSON.stringify(recurringRules)); }, [recurringRules]);
 
-  const [monthlyGoal, setMonthlyGoal] = useState<number>(() => {
-    const saved = localStorage.getItem('payroll_monthlyGoal');
-    return saved ? Number(saved) : 1000;
-  });
+  const currentMonthPayrollShifts = useMemo(() => shifts.filter(shift => {
+    const job = jobs.find(j => j.id === shift.jobId);
+    if (!job || job.payrollCycle.type !== 'end_of_month') return false;
+    const shiftDate = parseISO(shift.date);
+    const cutoffDay = job.payrollCycle.cutoffDay || 31;
+    let cycleStart: Date, cycleEnd: Date;
+    if (cutoffDay >= 28) { cycleStart = startOfMonth(currentDate); cycleEnd = endOfMonth(currentDate); }
+    else { cycleEnd = new Date(currentDate.getFullYear(), currentDate.getMonth(), cutoffDay); cycleStart = new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, cutoffDay + 1); }
+    return (isAfter(shiftDate, cycleStart) || isEqual(shiftDate, cycleStart)) && (isBefore(shiftDate, cycleEnd) || isEqual(shiftDate, cycleEnd));
+  }), [shifts, jobs, currentDate]);
 
-  useEffect(() => {
-    localStorage.setItem('payroll_monthlyGoal', String(monthlyGoal));
-  }, [monthlyGoal]);
-
-  useEffect(() => {
-    localStorage.setItem('payroll_ageGroup', ageGroup);
-  }, [ageGroup]);
-
-  useEffect(() => {
-    localStorage.setItem('payroll_jobs', JSON.stringify(jobs));
-  }, [jobs]);
-
-  useEffect(() => {
-    localStorage.setItem('payroll_shifts', JSON.stringify(shifts));
-  }, [shifts]);
-
-  useEffect(() => {
-    localStorage.setItem('payroll_darkMode', String(isDarkMode));
-    if (isDarkMode) {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
-  }, [isDarkMode]);
-  
-  const [selectedDate, setSelectedDate] = useState<string | null>(null);
-  const [isShiftModalOpen, setIsShiftModalOpen] = useState(false);
-  const [isJobModalOpen, setIsJobModalOpen] = useState(false);
-  
-  const [editingJob, setEditingJob] = useState<Job | null>(null);
-  const [tempShift, setTempShift] = useState<Partial<Shift>>({});
-
-  // Calculate shifts that fall into the current selected month's payroll cycle
-  const currentMonthPayrollShifts = useMemo(() => {
-    return shifts.filter(shift => {
-      const job = jobs.find(j => j.id === shift.jobId);
-      if (!job || job.payrollCycle.type !== 'end_of_month') return false;
-
-      const shiftDate = parseISO(shift.date);
-      const cutoffDay = job.payrollCycle.cutoffDay || 31;
-      
-      // If cutoff is e.g. 25th, the cycle for March is Feb 26 to Mar 25
-      let cycleStart, cycleEnd;
-      
-      if (cutoffDay >= 28) {
-        // Standard calendar month
-        cycleStart = startOfMonth(currentDate);
-        cycleEnd = endOfMonth(currentDate);
-      } else {
-        // Custom cutoff
-        cycleEnd = new Date(currentDate.getFullYear(), currentDate.getMonth(), cutoffDay);
-        cycleStart = new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, cutoffDay + 1);
-      }
-
-      return (isAfter(shiftDate, cycleStart) || isEqual(shiftDate, cycleStart)) && 
-             (isBefore(shiftDate, cycleEnd) || isEqual(shiftDate, cycleEnd));
-    });
-  }, [shifts, jobs, currentDate]);
-
-  // Calculate shifts for event-based jobs
-  const eventPayrollShifts = useMemo(() => {
-    return shifts.filter(shift => {
-      const job = jobs.find(j => j.id === shift.jobId);
-      return job && job.payrollCycle.type === 'end_of_event';
-    });
-  }, [shifts, jobs]);
-
-  const calculateShiftHours = (startTime?: string, endTime?: string, unpaidBreakHours: number = 0) => {
-    if (!startTime || !endTime) return 0;
-    
-    // Parse times
-    const [startH, startM] = startTime.split(':').map(Number);
-    const [endH, endM] = endTime.split(':').map(Number);
-    
-    let startMinutes = startH * 60 + startM;
-    let endMinutes = endH * 60 + endM;
-    
-    // Handle overnight shifts
-    if (endMinutes < startMinutes) {
-      endMinutes += 24 * 60;
-    }
-    
-    const totalMinutes = endMinutes - startMinutes;
-    const totalHours = totalMinutes / 60;
-    
-    return Math.max(0, totalHours - unpaidBreakHours);
-  };
-
-  const calculateCpf = (grossPay: number) => {
-    let employeeCpf = 0;
-    let employerCpf = 0;
-    const ratesForAge = CPF_RATES[ageGroup];
-
-    if (grossPay > 750) {
-      employeeCpf = grossPay * ratesForAge.employee;
-      employerCpf = grossPay * ratesForAge.employer;
-    } else if (grossPay > 500) {
-      employeeCpf = grossPay * ratesForAge.employee;
-      employerCpf = grossPay * ratesForAge.employer;
-    } else if (grossPay > 50) {
-      employeeCpf = 0;
-      employerCpf = grossPay * ratesForAge.employer;
-    }
-
-    return { employeeCpf, employerCpf };
-  };
-
-  const monthlyCalculations = useMemo(() => {
-    let grossPay = 0;
-    
-    currentMonthPayrollShifts.forEach(shift => {
-      const job = jobs.find(j => j.id === shift.jobId);
-      if (!job) return;
-
-      const date = parseISO(shift.date);
-      let rate = job.rates.weekday;
-      
-      if (shift.isPublicHoliday) {
-        rate = job.rates.publicHoliday;
-      } else if (isWeekend(date)) {
-        rate = job.rates.weekend;
-      }
-      
-      const hours = calculateShiftHours(shift.startTime, shift.endTime, shift.unpaidBreakHours);
-      grossPay += (hours * rate) + (shift.allowance || 0) - (shift.deduction || 0);
-    });
-
-    let employeeCpf = 0;
-    let employerCpf = 0;
-
-    const ratesForAge = CPF_RATES[ageGroup];
-
-    if (grossPay > 750) {
-      employeeCpf = grossPay * ratesForAge.employee;
-      employerCpf = grossPay * ratesForAge.employer;
-    } else if (grossPay > 500) {
-      employeeCpf = grossPay * ratesForAge.employee;
-      employerCpf = grossPay * ratesForAge.employer;
-    } else if (grossPay > 50) {
-      employeeCpf = 0;
-      employerCpf = grossPay * ratesForAge.employer;
-    } else {
-      employeeCpf = 0;
-      employerCpf = 0;
-    }
-
-    const netPay = grossPay - employeeCpf;
-    const totalCpf = employeeCpf + employerCpf;
-
-    return { grossPay, employeeCpf, employerCpf, netPay, totalCpf };
-  }, [currentMonthPayrollShifts, jobs, ageGroup]);
+  const eventPayrollShifts = useMemo(() => shifts.filter(s => jobs.find(j => j.id === s.jobId)?.payrollCycle.type === 'end_of_event'), [shifts, jobs]);
+  const monthlyCalc = useMemo(() => calcPayrollSummary(currentMonthPayrollShifts, jobs, ageGroup), [currentMonthPayrollShifts, jobs, ageGroup]);
 
   const dashboardAnalytics = useMemo(() => {
-    // 1. Income month-over-month (last 6 months)
-    const last6Months = Array.from({ length: 6 }).map((_, i) => subMonths(new Date(), 5 - i));
-    
-    const monthlyTrend = last6Months.map(monthDate => {
-      const monthStr = format(monthDate, 'MMM yyyy');
-      
-      // Get shifts for this month
-      const monthShifts = shifts.filter(s => isSameMonth(parseISO(s.date), monthDate));
-      
-      let grossPay = 0;
-      monthShifts.forEach(shift => {
-        const job = jobs.find(j => j.id === shift.jobId);
-        if (!job) return;
-        
-        const date = parseISO(shift.date);
-        let rate = job.rates.weekday;
-        if (shift.isPublicHoliday) rate = job.rates.publicHoliday;
-        else if (isWeekend(date)) rate = job.rates.weekend;
-        
-        const hours = calculateShiftHours(shift.startTime, shift.endTime, shift.unpaidBreakHours);
-        grossPay += (hours * rate) + (shift.allowance || 0) - (shift.deduction || 0);
-      });
-      
-      const { employeeCpf } = calculateCpf(grossPay);
-      const netPay = grossPay - employeeCpf;
-      
-      return {
-        month: monthStr,
-        gross: Number(grossPay.toFixed(2)),
-        net: Number(netPay.toFixed(2))
-      };
+    const last6 = Array.from({ length: 6 }, (_, i) => subMonths(new Date(), 5 - i));
+    const monthlyTrend = last6.map(d => {
+      const ms = shifts.filter(s => isSameMonth(parseISO(s.date), d));
+      const { grossPay, netPay } = calcPayrollSummary(ms, jobs, ageGroup);
+      return { month: format(d, 'MMM yy'), gross: +grossPay.toFixed(2), net: +netPay.toFixed(2) };
     });
-
-    // 2. Earnings by Job (Current Month)
-    const jobEarningsMap = new Map<string, { name: string, value: number, color: string }>();
-    
+    const earningsMap = new Map<string, { name: string; value: number; color: string }>();
     currentMonthPayrollShifts.forEach(shift => {
-      const job = jobs.find(j => j.id === shift.jobId);
-      if (!job) return;
-      
-      const date = parseISO(shift.date);
-      let rate = job.rates.weekday;
-      if (shift.isPublicHoliday) rate = job.rates.publicHoliday;
-      else if (isWeekend(date)) rate = job.rates.weekend;
-      
-      const hours = calculateShiftHours(shift.startTime, shift.endTime, shift.unpaidBreakHours);
-      const shiftGross = (hours * rate) + (shift.allowance || 0) - (shift.deduction || 0);
-      
-      const existing = jobEarningsMap.get(job.id);
-      if (existing) {
-        existing.value += shiftGross;
-      } else {
-        const colorObj = JOB_COLORS.find(c => c.id === job.colorId) || JOB_COLORS[0];
-        const hexColor = getHexColor(colorObj.id);
-        jobEarningsMap.set(job.id, { name: job.title, value: shiftGross, color: hexColor });
-      }
+      const job = jobs.find(j => j.id === shift.jobId); if (!job) return;
+      const gross = calcShiftGross(shift, job);
+      const ex = earningsMap.get(job.id);
+      if (ex) ex.value += gross;
+      else earningsMap.set(job.id, { name: job.title, value: gross, color: getHexColor(job.colorId) });
     });
-    
-    const jobEarnings = Array.from(jobEarningsMap.values()).map(item => ({
-      ...item,
-      value: Number(item.value.toFixed(2))
-    })).filter(item => item.value > 0);
-
+    const jobEarnings = [...earningsMap.values()].map(e => ({ ...e, value: +e.value.toFixed(2) })).filter(e => e.value > 0);
     return { monthlyTrend, jobEarnings };
   }, [shifts, jobs, ageGroup, currentMonthPayrollShifts]);
 
-  const daysInMonth = useMemo(() => {
-    return eachDayOfInterval({
-      start: startOfWeek(startOfMonth(currentDate)),
-      end: endOfWeek(endOfMonth(currentDate))
-    });
-  }, [currentDate]);
+  const incomeProjection = useMemo(() => {
+    const gap = Math.max(0, monthlyGoal - monthlyCalc.netPay);
+    const recommendations = hoursToGoal(gap, jobs, ageGroup);
+    const today = new Date();
+    const daysLeft = Math.max(0, Math.ceil((endOfMonth(today).getTime() - today.getTime()) / 86400000));
+    return { gap, recommendations, daysLeft };
+  }, [monthlyGoal, monthlyCalc.netPay, jobs, ageGroup]);
 
-  const handleDateClick = (date: Date) => {
+  const daysInMonth = useMemo(() => eachDayOfInterval({ start: startOfWeek(startOfMonth(currentDate)), end: endOfWeek(endOfMonth(currentDate)) }), [currentDate]);
+
+  const handleDateClick = useCallback((date: Date) => {
     const dateStr = format(date, 'yyyy-MM-dd');
     setSelectedDate(dateStr);
-    
-    // Find if there's an existing shift for this date
-    const existingShifts = shifts.filter(s => s.date === dateStr);
-    
-    if (existingShifts.length > 0) {
-      // Edit the first shift for simplicity, or we could list them
-      setTempShift(existingShifts[0]);
-    } else {
-      setTempShift({
-        jobId: jobs[0]?.id || '',
-        date: dateStr,
-        startTime: '09:00',
-        endTime: '17:00',
-        unpaidBreakHours: 1,
-        isPublicHoliday: !!SG_PUBLIC_HOLIDAYS[dateStr]
-      });
-    }
-    setIsShiftModalOpen(true);
-  };
+    const dayShifts = shifts.filter(s => s.date === dateStr);
+    if (dayShifts.length > 1) { setIsDayPickerOpen(true); }
+    else if (dayShifts.length === 1) { setTempShift(dayShifts[0]); setIsShiftModalOpen(true); }
+    else { setTempShift({ jobId: jobs[0]?.id || '', date: dateStr, startTime: '09:00', endTime: '17:00', unpaidBreakHours: 1, isPublicHoliday: !!SG_PUBLIC_HOLIDAYS[dateStr] }); setIsShiftModalOpen(true); }
+  }, [shifts, jobs]);
 
-  const handleSaveShift = () => {
+  const handleSaveShift = useCallback(() => {
     if (!tempShift.jobId || !tempShift.startTime || !tempShift.endTime) return;
-    
     if (tempShift.id) {
-      // Update existing
       setShifts(prev => prev.map(s => s.id === tempShift.id ? { ...s, ...tempShift } as Shift : s));
     } else {
-      // Add new
-      const newShift: Shift = {
-        id: Math.random().toString(36).substr(2, 9),
-        jobId: tempShift.jobId,
-        date: tempShift.date!,
-        startTime: tempShift.startTime,
-        endTime: tempShift.endTime,
-        unpaidBreakHours: tempShift.unpaidBreakHours || 0,
-        isPublicHoliday: tempShift.isPublicHoliday || false,
-        allowance: tempShift.allowance || 0,
-        deduction: tempShift.deduction || 0
-      };
-      setShifts(prev => [...prev, newShift]);
+      setShifts(prev => [...prev, { id: Math.random().toString(36).substr(2, 9), jobId: tempShift.jobId!, date: tempShift.date!, startTime: tempShift.startTime!, endTime: tempShift.endTime!, unpaidBreakHours: tempShift.unpaidBreakHours || 0, isPublicHoliday: tempShift.isPublicHoliday || false, allowance: tempShift.allowance || 0, deduction: tempShift.deduction || 0, notes: tempShift.notes || '' }]);
     }
     setIsShiftModalOpen(false);
-  };
+  }, [tempShift]);
 
-  const handleDeleteShift = () => {
-    if (tempShift.id) {
-      setShifts(prev => prev.filter(s => s.id !== tempShift.id));
-    }
+  const handleDeleteShift = useCallback(() => {
+    if (tempShift.id) setShifts(prev => prev.filter(s => s.id !== tempShift.id));
     setIsShiftModalOpen(false);
-  };
+  }, [tempShift]);
 
-  const handleSaveJob = () => {
+  const handleSaveJob = useCallback(() => {
     if (!editingJob?.title) return;
-    
-    if (jobs.find(j => j.id === editingJob.id)) {
-      setJobs(prev => prev.map(j => j.id === editingJob.id ? editingJob : j));
-    } else {
-      setJobs(prev => [...prev, { ...editingJob, id: Math.random().toString(36).substr(2, 9) }]);
-    }
+    if (jobs.find(j => j.id === editingJob.id)) setJobs(prev => prev.map(j => j.id === editingJob.id ? editingJob : j));
+    else setJobs(prev => [...prev, { ...editingJob, id: Math.random().toString(36).substr(2, 9) }]);
     setIsJobModalOpen(false);
-  };
+  }, [editingJob, jobs]);
 
-  const handleDeleteJob = (jobId: string) => {
+  const handleDeleteJob = useCallback((jobId: string) => {
     setJobs(prev => prev.filter(j => j.id !== jobId));
     setShifts(prev => prev.filter(s => s.jobId !== jobId));
+    setTemplates(prev => prev.filter(t => t.jobId !== jobId));
     setIsJobModalOpen(false);
-  };
+  }, []);
+
+  const handleSaveTemplate = useCallback(() => {
+    if (!editingTemplate.name || !editingTemplate.jobId) return;
+    const t = editingTemplate as ShiftTemplate;
+    if (templates.find(x => x.id === t.id)) setTemplates(prev => prev.map(x => x.id === t.id ? t : x));
+    else setTemplates(prev => [...prev, { ...t, id: Math.random().toString(36).substr(2, 9) }]);
+    setIsTemplateModalOpen(false);
+  }, [editingTemplate, templates]);
+
+  const handleApplyRecurring = useCallback(() => {
+    const rule = editingRecurring as RecurringRule;
+    if (!rule.templateId || !rule.startDate || !rule.endDate || !rule.daysOfWeek?.length) return;
+    const tmpl = templates.find(t => t.id === rule.templateId); if (!tmpl) return;
+    const ruleWithId = { ...rule, id: Math.random().toString(36).substr(2, 9) };
+    setShifts(prev => [...prev, ...expandRecurringRule(ruleWithId, tmpl, prev)]);
+    setRecurringRules(prev => [...prev, ruleWithId]);
+    setIsRecurringModalOpen(false); setEditingRecurring({});
+  }, [editingRecurring, templates]);
+
+  const openNewJobModal = () => { setEditingJob({ id: '', title: 'New Job', colorId: JOB_COLORS[jobs.length % JOB_COLORS.length].id, rates: { weekday: 10, weekend: 12, publicHoliday: 15 }, payrollCycle: { type: 'end_of_month', cutoffDay: 31 } }); setIsJobModalOpen(true); };
 
   const generatePDF = () => {
     const doc = new jsPDF();
-    doc.setFontSize(20);
-    doc.text('Payslip Summary', 14, 22);
-    
-    doc.setFontSize(12);
-    doc.text(`Generated on: ${format(new Date(), 'MMM dd, yyyy')}`, 14, 32);
-    doc.text(`Age Group: ${CPF_RATES[ageGroup].label}`, 14, 40);
-
-    // Monthly Income Summary
-    doc.setFontSize(16);
-    doc.text(`Monthly Income (${format(currentDate, 'MMMM yyyy')})`, 14, 55);
-    
-    autoTable(doc, {
-      startY: 60,
-      head: [['Job', 'Gross Pay', 'Employee CPF', 'Employer CPF', 'Net Pay']],
-      body: jobs.filter(j => j.payrollCycle.type === 'end_of_month').map(job => {
-        const jobShifts = currentMonthPayrollShifts.filter(s => s.jobId === job.id);
-        let jobGross = 0;
-        jobShifts.forEach(shift => {
-          const date = parseISO(shift.date);
-          let rate = job.rates.weekday;
-          if (shift.isPublicHoliday) rate = job.rates.publicHoliday;
-          else if (isWeekend(date)) rate = job.rates.weekend;
-          const hours = calculateShiftHours(shift.startTime, shift.endTime, shift.unpaidBreakHours);
-          jobGross += (hours * rate) + (shift.allowance || 0) - (shift.deduction || 0);
-        });
-        const { employeeCpf, employerCpf } = calculateCpf(jobGross);
-        return [
-          job.title,
-          `$${jobGross.toFixed(2)}`,
-          `-$${employeeCpf.toFixed(2)}`,
-          `+$${employerCpf.toFixed(2)}`,
-          `$${(jobGross - employeeCpf).toFixed(2)}`
-        ];
-      })
-    });
-
-    // Event Income Summary
-    const finalY = (doc as any).lastAutoTable.finalY || 60;
-    doc.setFontSize(16);
-    doc.text('Event / Gig Income', 14, finalY + 15);
-
-    autoTable(doc, {
-      startY: finalY + 20,
-      head: [['Job', 'Gross Pay', 'Employee CPF', 'Employer CPF', 'Net Pay']],
-      body: jobs.filter(j => j.payrollCycle.type === 'end_of_event').map(job => {
-        const jobShifts = eventPayrollShifts.filter(s => s.jobId === job.id);
-        let jobGross = 0;
-        jobShifts.forEach(shift => {
-          const date = parseISO(shift.date);
-          let rate = job.rates.weekday;
-          if (shift.isPublicHoliday) rate = job.rates.publicHoliday;
-          else if (isWeekend(date)) rate = job.rates.weekend;
-          const hours = calculateShiftHours(shift.startTime, shift.endTime, shift.unpaidBreakHours);
-          jobGross += (hours * rate) + (shift.allowance || 0) - (shift.deduction || 0);
-        });
-        const { employeeCpf, employerCpf } = calculateCpf(jobGross);
-        return [
-          job.title,
-          `$${jobGross.toFixed(2)}`,
-          `-$${employeeCpf.toFixed(2)}`,
-          `+$${employerCpf.toFixed(2)}`,
-          `$${(jobGross - employeeCpf).toFixed(2)}`
-        ];
-      })
-    });
-
+    doc.setFontSize(20); doc.text('Payslip Summary', 14, 22);
+    doc.setFontSize(12); doc.text(`Generated: ${format(new Date(), 'MMM dd, yyyy')}`, 14, 32); doc.text(`Age Group: ${CPF_RATES[ageGroup].label}`, 14, 40);
+    doc.setFontSize(16); doc.text(`Monthly — ${format(currentDate, 'MMMM yyyy')}`, 14, 55);
+    autoTable(doc, { startY: 60, head: [['Job','Gross','Emp CPF','Empr CPF','Net']], body: jobs.filter(j => j.payrollCycle.type === 'end_of_month').map(job => { let g = 0; currentMonthPayrollShifts.filter(s => s.jobId === job.id).forEach(s => { g += calcShiftGross(s, job); }); const { employeeCpf, employerCpf } = calculateCpf(g, ageGroup); return [job.title, `$${g.toFixed(2)}`, `-$${employeeCpf.toFixed(2)}`, `+$${employerCpf.toFixed(2)}`, `$${(g - employeeCpf).toFixed(2)}`]; }) });
+    const fy = (doc as any).lastAutoTable.finalY || 80;
+    doc.setFontSize(16); doc.text('Event / Gig', 14, fy + 15);
+    autoTable(doc, { startY: fy + 20, head: [['Job','Gross','Emp CPF','Empr CPF','Net']], body: jobs.filter(j => j.payrollCycle.type === 'end_of_event').map(job => { let g = 0; eventPayrollShifts.filter(s => s.jobId === job.id).forEach(s => { g += calcShiftGross(s, job); }); const { employeeCpf, employerCpf } = calculateCpf(g, ageGroup); return [job.title, `$${g.toFixed(2)}`, `-$${employeeCpf.toFixed(2)}`, `+$${employerCpf.toFixed(2)}`, `$${(g - employeeCpf).toFixed(2)}`]; }) });
     doc.save(`Payslip_${format(new Date(), 'yyyy-MM-dd')}.pdf`);
   };
 
-  const openNewJobModal = () => {
-    setEditingJob({
-      id: '',
-      title: 'New Job',
-      colorId: JOB_COLORS[jobs.length % JOB_COLORS.length].id,
-      rates: { weekday: 10, weekend: 12, publicHoliday: 15 },
-      payrollCycle: { type: 'end_of_month', cutoffDay: 31 }
-    });
-    setIsJobModalOpen(true);
-  };
-
   const exportToCSV = () => {
-    let csvContent = "--- SHIFTS DATA ---\n";
-    csvContent += ['Job Title', 'Payroll Cycle', 'Date', 'Start Time', 'End Time', 'Unpaid Break (hrs)', 'Paid Hours', 'Public Holiday', 'Hourly Rate', 'Allowance', 'Deduction', 'Gross Pay'].join(',') + '\n';
-    
-    const sortedShifts = [...shifts].sort((a, b) => a.date.localeCompare(b.date));
-    
-    sortedShifts.forEach(shift => {
-      const job = jobs.find(j => j.id === shift.jobId);
-      if (!job) return;
-      
+    let csv = 'Job,Cycle,Date,Start,End,Break,Hours,PH,Rate,Allowance,Deduction,Gross,Notes\n';
+    [...shifts].sort((a, b) => a.date.localeCompare(b.date)).forEach(shift => {
+      const job = jobs.find(j => j.id === shift.jobId); if (!job) return;
       const date = parseISO(shift.date);
-      let rate = job.rates.weekday;
-      if (shift.isPublicHoliday) rate = job.rates.publicHoliday;
-      else if (isWeekend(date)) rate = job.rates.weekend;
-      
+      const rate = shift.isPublicHoliday ? job.rates.publicHoliday : isWeekend(date) ? job.rates.weekend : job.rates.weekday;
       const hours = calculateShiftHours(shift.startTime, shift.endTime, shift.unpaidBreakHours);
-      const grossPay = (hours * rate) + (shift.allowance || 0) - (shift.deduction || 0);
-      
-      csvContent += [
-        `"${job.title}"`,
-        job.payrollCycle.type === 'end_of_month' ? 'Monthly' : 'Event',
-        shift.date,
-        shift.startTime,
-        shift.endTime,
-        shift.unpaidBreakHours,
-        hours.toFixed(2),
-        shift.isPublicHoliday ? 'Yes' : 'No',
-        rate.toFixed(2),
-        (shift.allowance || 0).toFixed(2),
-        (shift.deduction || 0).toFixed(2),
-        grossPay.toFixed(2)
-      ].join(',') + '\n';
+      csv += [`"${job.title}"`, job.payrollCycle.type === 'end_of_month' ? 'Monthly' : 'Event', shift.date, shift.startTime, shift.endTime, shift.unpaidBreakHours, hours.toFixed(2), shift.isPublicHoliday ? 'Yes' : 'No', rate.toFixed(2), (shift.allowance||0).toFixed(2), (shift.deduction||0).toFixed(2), calcShiftGross(shift, job).toFixed(2), `"${shift.notes||''}"`].join(',') + '\n';
     });
-
-    csvContent += "\n--- JOBS SUMMARY ---\n";
-    csvContent += ['Job Title', 'Payroll Cycle', 'Total Hours', 'Gross Pay', 'Employee CPF', 'Employer CPF', 'Net Pay'].join(',') + '\n';
-    
-    jobs.forEach(job => {
-      const jobShifts = shifts.filter(s => s.jobId === job.id);
-      let jobGross = 0;
-      let totalHours = 0;
-      
-      jobShifts.forEach(shift => {
-        const date = parseISO(shift.date);
-        let rate = job.rates.weekday;
-        if (shift.isPublicHoliday) rate = job.rates.publicHoliday;
-        else if (isWeekend(date)) rate = job.rates.weekend;
-        
-        const hours = calculateShiftHours(shift.startTime, shift.endTime, shift.unpaidBreakHours);
-        jobGross += (hours * rate) + (shift.allowance || 0) - (shift.deduction || 0);
-        totalHours += hours;
-      });
-
-      const { employeeCpf, employerCpf } = calculateCpf(jobGross);
-      const netPay = jobGross - employeeCpf;
-
-      csvContent += [
-        `"${job.title}"`,
-        job.payrollCycle.type === 'end_of_month' ? 'Monthly' : 'Event',
-        totalHours.toFixed(2),
-        jobGross.toFixed(2),
-        employeeCpf.toFixed(2),
-        employerCpf.toFixed(2),
-        netPay.toFixed(2)
-      ].join(',') + '\n';
-    });
-
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.setAttribute('href', url);
-    link.setAttribute('download', `payroll_export_${format(new Date(), 'yyyy-MM-dd')}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `payroll_${format(new Date(), 'yyyy-MM-dd')}.csv`; document.body.appendChild(a); a.click(); document.body.removeChild(a);
   };
+
+  const ic = 'w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all dark:text-white text-sm';
+  const nb = (active: boolean) => `w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${active ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300' : 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-700/50'}`;
 
   return (
     <div className="min-h-screen bg-neutral-50 text-neutral-900 font-sans flex flex-col md:flex-row dark:bg-neutral-900 dark:text-neutral-100 transition-colors duration-200">
-      {/* Sidebar */}
-      <aside className="w-full md:w-80 bg-white border-r border-neutral-200 p-6 flex flex-col gap-8 shrink-0 overflow-y-auto dark:bg-neutral-800 dark:border-neutral-700 transition-colors duration-200">
+
+      {/* SIDEBAR */}
+      <aside className="w-full md:w-64 bg-white border-r border-neutral-200 p-5 flex flex-col gap-6 shrink-0 md:min-h-screen overflow-y-auto dark:bg-neutral-800 dark:border-neutral-700 transition-colors">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-xl font-semibold flex items-center gap-2">
-              <Calculator className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
-              Payroll Calculator
+            <h1 className="text-base font-semibold flex items-center gap-2">
+              <Calculator className="w-4 h-4 text-indigo-600 dark:text-indigo-400" /> Payroll Calculator
             </h1>
-            <p className="text-sm text-neutral-500 dark:text-neutral-400 mt-1">Singapore Part-Time</p>
+            <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">Singapore Part-Time</p>
           </div>
-          <button 
-            onClick={() => setIsDarkMode(!isDarkMode)} 
-            className="p-2 rounded-full hover:bg-neutral-100 dark:hover:bg-neutral-700 transition-colors"
-            title="Toggle Dark Mode"
-          >
-            {isDarkMode ? <Sun className="w-5 h-5 text-amber-500" /> : <Moon className="w-5 h-5 text-slate-600" />}
+          <button onClick={() => setIsDarkMode(!isDarkMode)} className="p-1.5 rounded-full hover:bg-neutral-100 dark:hover:bg-neutral-700 transition-colors" title="Toggle dark mode">
+            {isDarkMode ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-slate-500" />}
           </button>
         </div>
 
-        {/* Navigation */}
-        <div className="space-y-1">
-          <button 
-            onClick={() => setActiveTab('calendar')}
-            className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'calendar' ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300' : 'text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-700/50'}`}
-          >
-            <CalendarDays className="w-4 h-4" /> Calendar View
-          </button>
-          <button 
-            onClick={() => setActiveTab('monthly_income')}
-            className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'monthly_income' ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300' : 'text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-700/50'}`}
-          >
-            <Calendar className="w-4 h-4" /> Monthly Income
-          </button>
-          <button 
-            onClick={() => setActiveTab('event_income')}
-            className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'event_income' ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300' : 'text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-700/50'}`}
-          >
-            <FileText className="w-4 h-4" /> Event / Gig Income
-          </button>
-          <button 
-            onClick={() => setActiveTab('dashboard')}
-            className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'dashboard' ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300' : 'text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-700/50'}`}
-          >
-            <BarChart3 className="w-4 h-4" /> Insights & Goals
-          </button>
-          <div className="pt-2 mt-2 border-t border-neutral-100 dark:border-neutral-700 space-y-2">
-            <button 
-              onClick={exportToCSV}
-              className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-emerald-700 bg-emerald-50 hover:bg-emerald-100 dark:text-emerald-300 dark:bg-emerald-900/30 dark:hover:bg-emerald-900/50 transition-colors"
-            >
-              <Download className="w-4 h-4" /> Export to CSV
-            </button>
-            <button 
-              onClick={generatePDF}
-              className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-rose-700 bg-rose-50 hover:bg-rose-100 dark:text-rose-300 dark:bg-rose-900/30 dark:hover:bg-rose-900/50 transition-colors"
-            >
-              <FileText className="w-4 h-4" /> Download PDF
-            </button>
+        <nav className="space-y-0.5">
+          <button className={nb(activeTab==='calendar')} onClick={() => setActiveTab('calendar')}><CalendarDays className="w-4 h-4" /> Calendar</button>
+          <button className={nb(activeTab==='monthly_income')} onClick={() => setActiveTab('monthly_income')}><Calendar className="w-4 h-4" /> Monthly Income</button>
+          <button className={nb(activeTab==='event_income')} onClick={() => setActiveTab('event_income')}><FileText className="w-4 h-4" /> Event / Gig</button>
+          <button className={nb(activeTab==='dashboard')} onClick={() => setActiveTab('dashboard')}><BarChart3 className="w-4 h-4" /> Insights & Goals</button>
+          <div className="pt-2 mt-1 border-t border-neutral-100 dark:border-neutral-700 space-y-0.5">
+            <button className={nb(false)} onClick={() => { setEditingTemplate({ jobId: jobs[0]?.id||'', startTime:'09:00', endTime:'17:00', unpaidBreakHours:1 }); setIsTemplateModalOpen(true); }}><Repeat className="w-4 h-4" /> Templates</button>
+            <button className={nb(false)} onClick={() => { setEditingRecurring({ daysOfWeek:[] }); setIsRecurringModalOpen(true); }}><Clock className="w-4 h-4" /> Recurring Shifts</button>
           </div>
-        </div>
+          <div className="pt-2 mt-1 border-t border-neutral-100 dark:border-neutral-700 space-y-0.5">
+            <button onClick={exportToCSV} className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium text-emerald-700 hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-emerald-900/30 transition-colors"><Download className="w-4 h-4" /> Export CSV</button>
+            <button onClick={generatePDF} className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium text-rose-700 hover:bg-rose-50 dark:text-rose-300 dark:hover:bg-rose-900/30 transition-colors"><FileText className="w-4 h-4" /> Download PDF</button>
+          </div>
+        </nav>
 
-        {/* Jobs List */}
-        <div className="space-y-4">
+        <div className="space-y-3">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold uppercase tracking-wider text-neutral-500 flex items-center gap-2">
-              <Briefcase className="w-4 h-4" /> Jobs
-            </h2>
-            <button onClick={openNewJobModal} className="p-1 text-indigo-600 hover:bg-indigo-50 rounded transition-colors">
-              <Plus className="w-4 h-4" />
-            </button>
+            <span className="text-xs font-semibold uppercase tracking-wider text-neutral-400 flex items-center gap-1.5"><Briefcase className="w-3.5 h-3.5" /> Jobs</span>
+            <button onClick={openNewJobModal} className="p-1 text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded transition-colors"><Plus className="w-3.5 h-3.5" /></button>
           </div>
-          
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             {jobs.map(job => {
-              const color = JOB_COLORS.find(c => c.id === job.colorId) || JOB_COLORS[0];
+              const c = JOB_COLORS.find(x => x.id === job.colorId) || JOB_COLORS[0];
               return (
-                <div key={job.id} className={`p-3 rounded-lg border ${color.border} ${color.lightBg} flex items-center justify-between group`}>
-                  <div className="flex items-center gap-2">
-                    <div className={`w-3 h-3 rounded-full ${color.bg}`}></div>
-                    <div className="flex flex-col">
-                      <span className={`font-medium text-sm ${color.text}`}>{job.title}</span>
-                      <span className={`text-[10px] opacity-70 ${color.text}`}>
-                        {job.payrollCycle.type === 'end_of_month' ? `Monthly (Cutoff: ${job.payrollCycle.cutoffDay})` : 'Event-based'}
-                      </span>
+                <div key={job.id} className={`px-2.5 py-2 rounded-lg border ${c.border} ${c.lightBg} flex items-center justify-between group`}>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className={`w-2.5 h-2.5 rounded-full ${c.bg} shrink-0`} />
+                    <div className="min-w-0">
+                      <p className={`font-medium text-xs truncate ${c.text}`}>{job.title}</p>
+                      <p className={`text-[10px] opacity-60 ${c.text}`}>{job.payrollCycle.type === 'end_of_month' ? `Monthly · D${job.payrollCycle.cutoffDay}` : 'Event'}</p>
                     </div>
                   </div>
-                  <button 
-                    onClick={() => { setEditingJob(job); setIsJobModalOpen(true); }}
-                    className="opacity-0 group-hover:opacity-100 p-1.5 text-neutral-500 hover:text-neutral-900 hover:bg-white/50 rounded transition-all"
-                  >
-                    <Edit2 className="w-3.5 h-3.5" />
-                  </button>
+                  <button onClick={() => { setEditingJob(job); setIsJobModalOpen(true); }} className="opacity-0 group-hover:opacity-100 p-1 text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 rounded transition-all shrink-0"><Edit2 className="w-3 h-3" /></button>
                 </div>
               );
             })}
-            {jobs.length === 0 && (
-              <div className="text-sm text-neutral-500 italic text-center py-4">No jobs added yet.</div>
-            )}
+            {jobs.length === 0 && <p className="text-xs text-neutral-400 italic text-center py-3">No jobs yet.</p>}
           </div>
         </div>
 
-        {/* CPF Settings */}
-        <div className="space-y-4">
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 flex items-center gap-2">
-            <User className="w-4 h-4" /> Employee Details
-          </h2>
+        <div className="space-y-3">
+          <span className="text-xs font-semibold uppercase tracking-wider text-neutral-400 flex items-center gap-1.5"><User className="w-3.5 h-3.5" /> Employee</span>
           <div>
-            <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">Age Group</label>
-            <select value={ageGroup} onChange={e => setAgeGroup(e.target.value as AgeGroup)} className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all dark:text-white">
-              {Object.entries(CPF_RATES).map(([key, {label}]) => (
-                <option key={key} value={key}>{label}</option>
-              ))}
+            <label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-1">CPF Age Group</label>
+            <select value={ageGroup} onChange={e => setAgeGroup(e.target.value as AgeGroup)} className="w-full px-2.5 py-1.5 bg-neutral-50 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-lg text-xs outline-none focus:ring-2 focus:ring-indigo-500 dark:text-white">
+              {Object.entries(CPF_RATES).map(([k, { label }]) => <option key={k} value={k}>{label}</option>)}
             </select>
           </div>
-          <div className="bg-indigo-50 text-indigo-800 p-3 rounded-lg text-xs leading-relaxed">
-            <Info className="w-4 h-4 inline mr-1 -mt-0.5" />
-            CPF rates are based on 1 Jan 2026 guidelines. For wages ≤ $750, estimated full rates are applied.
+          <div className="bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 p-2.5 rounded-lg text-[11px] leading-relaxed">
+            <Info className="w-3.5 h-3.5 inline mr-1 -mt-0.5" /> Rates effective {CPF_RATES_EFFECTIVE_DATE}.
           </div>
         </div>
       </aside>
 
-      {/* Main Content */}
-      <main className="flex-1 p-6 md:p-10 overflow-y-auto dark:bg-neutral-900 transition-colors duration-200">
-        <div className="max-w-5xl mx-auto space-y-8">
-          
+      {/* MAIN */}
+      <main className="flex-1 p-4 sm:p-6 md:p-8 overflow-y-auto dark:bg-neutral-900 transition-colors">
+        <div className="max-w-5xl mx-auto space-y-6">
+
           {activeTab === 'calendar' && (
             <>
-              {/* Summary Cards for Current Month */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                <div className="bg-white dark:bg-neutral-800 p-6 rounded-2xl shadow-sm border border-neutral-100 dark:border-neutral-700 transition-colors">
-                  <p className="text-sm font-medium text-neutral-500 dark:text-neutral-400 mb-1">Monthly Gross Pay</p>
-                  <p className="text-3xl font-light text-neutral-900 dark:text-white">${monthlyCalculations.grossPay.toFixed(2)}</p>
-                </div>
-                <div className="bg-white dark:bg-neutral-800 p-6 rounded-2xl shadow-sm border border-neutral-100 dark:border-neutral-700 transition-colors">
-                  <p className="text-sm font-medium text-neutral-500 dark:text-neutral-400 mb-1">Monthly Net Pay</p>
-                  <p className="text-3xl font-light text-emerald-600 dark:text-emerald-400">${monthlyCalculations.netPay.toFixed(2)}</p>
-                </div>
-                <div className="bg-white dark:bg-neutral-800 p-6 rounded-2xl shadow-sm border border-neutral-100 dark:border-neutral-700 transition-colors">
-                  <p className="text-sm font-medium text-neutral-500 dark:text-neutral-400 mb-1">Employee CPF (-)</p>
-                  <p className="text-3xl font-light text-rose-600 dark:text-rose-400">${monthlyCalculations.employeeCpf.toFixed(2)}</p>
-                </div>
-                <div className="bg-white dark:bg-neutral-800 p-6 rounded-2xl shadow-sm border border-neutral-100 dark:border-neutral-700 transition-colors">
-                  <p className="text-sm font-medium text-neutral-500 dark:text-neutral-400 mb-1">Employer CPF (+)</p>
-                  <p className="text-3xl font-light text-indigo-600 dark:text-indigo-400">${monthlyCalculations.employerCpf.toFixed(2)}</p>
-                </div>
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                {[
+                  { l: 'Gross Pay',    v: `$${monthlyCalc.grossPay.toFixed(2)}`,     cl: 'text-neutral-900 dark:text-white' },
+                  { l: 'Net Pay',      v: `$${monthlyCalc.netPay.toFixed(2)}`,        cl: 'text-emerald-600 dark:text-emerald-400' },
+                  { l: 'Employee CPF', v: `-$${monthlyCalc.employeeCpf.toFixed(2)}`,  cl: 'text-rose-600 dark:text-rose-400' },
+                  { l: 'Employer CPF', v: `+$${monthlyCalc.employerCpf.toFixed(2)}`,  cl: 'text-indigo-600 dark:text-indigo-400' },
+                ].map(({ l, v, cl }) => (
+                  <div key={l} className="bg-white dark:bg-neutral-800 p-4 rounded-2xl shadow-sm border border-neutral-100 dark:border-neutral-700">
+                    <p className="text-xs font-medium text-neutral-500 dark:text-neutral-400 mb-1">{l}</p>
+                    <p className={`text-2xl font-light ${cl}`}>{v}</p>
+                  </div>
+                ))}
               </div>
 
-              {/* Calendar Section */}
-              <div className="bg-white dark:bg-neutral-800 rounded-2xl shadow-sm border border-neutral-100 dark:border-neutral-700 overflow-hidden transition-colors">
-                <div className="p-4 sm:p-6 border-b border-neutral-100 dark:border-neutral-700 flex items-center justify-between">
-                  <h2 className="text-lg font-semibold flex items-center gap-2 dark:text-white">
-                    <CalendarDays className="w-5 h-5 text-neutral-500 dark:text-neutral-400" />
-                    {format(currentDate, 'MMMM yyyy')}
+              <div className="bg-white dark:bg-neutral-800 rounded-2xl shadow-sm border border-neutral-100 dark:border-neutral-700 overflow-hidden">
+                <div className="p-4 border-b border-neutral-100 dark:border-neutral-700 flex items-center justify-between">
+                  <h2 className="text-base font-semibold flex items-center gap-2 dark:text-white">
+                    <CalendarDays className="w-4 h-4 text-neutral-400" /> {format(currentDate, 'MMMM yyyy')}
                   </h2>
-                  <div className="flex items-center gap-2">
-                    <button onClick={() => setCurrentDate(subMonths(currentDate, 1))} className="p-2 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded-full transition-colors dark:text-white">
-                      <ChevronLeft className="w-5 h-5" />
-                    </button>
-                    <button onClick={() => setCurrentDate(new Date())} className="px-3 py-1 text-sm font-medium hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded-full transition-colors dark:text-white">
-                      Today
-                    </button>
-                    <button onClick={() => setCurrentDate(addMonths(currentDate, 1))} className="p-2 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded-full transition-colors dark:text-white">
-                      <ChevronRight className="w-5 h-5" />
-                    </button>
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => setCurrentDate(subMonths(currentDate, 1))} className="p-1.5 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded-full transition-colors dark:text-white"><ChevronLeft className="w-4 h-4" /></button>
+                    <button onClick={() => setCurrentDate(new Date())} className="px-2.5 py-1 text-xs font-medium hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded-full transition-colors dark:text-white">Today</button>
+                    <button onClick={() => setCurrentDate(addMonths(currentDate, 1))} className="p-1.5 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded-full transition-colors dark:text-white"><ChevronRight className="w-4 h-4" /></button>
                   </div>
                 </div>
-                
-                <div className="p-4 sm:p-6">
-                  <div className="grid grid-cols-7 gap-1 sm:gap-2 mb-2">
-                    {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => (
-                      <div key={day} className="text-center text-xs font-semibold text-neutral-400 uppercase tracking-wider py-2">
-                        <span className="hidden sm:inline">{day}</span>
-                        <span className="sm:hidden">{day.charAt(0)}</span>
-                      </div>
+                <div className="p-3 sm:p-4">
+                  <div className="grid grid-cols-7 gap-1 mb-1">
+                    {['S','M','T','W','T','F','S'].map((d, i) => (
+                      <div key={i} className="text-center text-[10px] font-semibold text-neutral-400 uppercase py-1">{d}</div>
                     ))}
                   </div>
-                  <div className="grid grid-cols-7 gap-1 sm:gap-2">
+                  {shifts.length === 0 && <p className="text-center text-xs text-neutral-400 py-1 mb-1">Tap any day to log a shift</p>}
+                  <div className="grid grid-cols-7 gap-1">
                     {daysInMonth.map(date => {
-                      const dateStr = format(date, 'yyyy-MM-dd');
+                      const dateStr   = format(date, 'yyyy-MM-dd');
                       const dayShifts = shifts.filter(s => s.date === dateStr);
-                      const isCurrentMonth = isSameMonth(date, currentDate);
-                      const isTodayDate = isToday(date);
-                      const holidayName = SG_PUBLIC_HOLIDAYS[dateStr];
-                      
+                      const inMonth   = isSameMonth(date, currentDate);
+                      const today     = isToday(date);
+                      const holiday   = SG_PUBLIC_HOLIDAYS[dateStr];
                       return (
-                        <div
-                          key={dateStr}
-                          onClick={() => handleDateClick(date)}
-                          role="button"
-                          tabIndex={0}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' || e.key === ' ') {
-                              e.preventDefault();
-                              handleDateClick(date);
-                            }
-                          }}
-                          className={`
-                            group min-h-[80px] sm:min-h-[100px] p-1 sm:p-2 rounded-xl border flex flex-col items-start justify-start transition-all text-left relative cursor-pointer
-                            ${!isCurrentMonth ? 'opacity-40 bg-neutral-50 dark:bg-neutral-800/50 border-transparent' : 'bg-white dark:bg-neutral-800 border-neutral-100 dark:border-neutral-700 hover:border-indigo-300 dark:hover:border-indigo-500 hover:shadow-sm'}
-                            ${isTodayDate ? 'ring-2 ring-indigo-500 ring-offset-1 sm:ring-offset-2 dark:ring-offset-neutral-900' : ''}
-                            ${holidayName && dayShifts.length === 0 ? 'bg-amber-50/30 dark:bg-amber-900/10 border-amber-100 dark:border-amber-900/30' : ''}
-                          `}
-                        >
+                        <div key={dateStr} onClick={() => handleDateClick(date)} role="button" tabIndex={0}
+                          onKeyDown={e => { if (e.key==='Enter'||e.key===' ') { e.preventDefault(); handleDateClick(date); } }}
+                          className={['group min-h-[60px] sm:min-h-[78px] p-1 rounded-xl border flex flex-col items-start transition-all cursor-pointer',
+                            !inMonth ? 'opacity-30 bg-neutral-50 dark:bg-neutral-800/30 border-transparent' : 'bg-white dark:bg-neutral-800 border-neutral-100 dark:border-neutral-700 hover:border-indigo-300 dark:hover:border-indigo-500 hover:shadow-sm',
+                            today ? 'ring-2 ring-indigo-500 ring-offset-1 dark:ring-offset-neutral-900' : '',
+                            holiday && dayShifts.length===0 ? 'bg-amber-50/40 dark:bg-amber-900/10 border-amber-100 dark:border-amber-900/30' : '',
+                          ].join(' ')}>
                           <div className="flex items-center justify-between w-full">
-                            <span className={`text-xs sm:text-sm font-medium ${isTodayDate ? 'text-indigo-600 dark:text-indigo-400' : holidayName ? 'text-amber-600 dark:text-amber-500' : 'text-neutral-700 dark:text-neutral-300'}`}>
-                              {format(date, 'd')}
-                            </span>
+                            <span className={`text-xs font-medium ${today ? 'text-indigo-600 dark:text-indigo-400' : holiday ? 'text-amber-500' : 'text-neutral-600 dark:text-neutral-400'}`}>{format(date, 'd')}</span>
                             {copiedShift && (
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  const newShift: Shift = {
-                                    ...(copiedShift as Shift),
-                                    id: Math.random().toString(36).substr(2, 9),
-                                    date: dateStr,
-                                    isPublicHoliday: !!SG_PUBLIC_HOLIDAYS[dateStr]
-                                  };
-                                  setShifts(prev => [...prev, newShift]);
-                                }}
-                                className="opacity-0 group-hover:opacity-100 p-0.5 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/50 rounded transition-all"
-                                title="Paste Shift"
-                              >
-                                <ClipboardPaste className="w-3.5 h-3.5" />
-                              </button>
+                              <button onClick={e => { e.stopPropagation(); if (shifts.some(s => s.date===dateStr && s.jobId===(copiedShift as Shift).jobId)) return; setShifts(prev => [...prev, { ...(copiedShift as Shift), id: Math.random().toString(36).substr(2,9), date: dateStr, isPublicHoliday: !!SG_PUBLIC_HOLIDAYS[dateStr] }]); }}
+                                className="opacity-0 group-hover:opacity-100 p-0.5 text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/40 rounded transition-all" title="Paste"><ClipboardPaste className="w-3 h-3" /></button>
                             )}
                           </div>
-                          
-                          <div className="mt-1 w-full space-y-1 overflow-hidden">
+                          <div className="mt-0.5 w-full space-y-0.5 overflow-hidden">
                             {dayShifts.map(shift => {
-                              const job = jobs.find(j => j.id === shift.jobId);
-                              const color = job ? JOB_COLORS.find(c => c.id === job.colorId) || JOB_COLORS[0] : JOB_COLORS[0];
-                              const hours = calculateShiftHours(shift.startTime, shift.endTime, shift.unpaidBreakHours);
-                              
+                              const job = jobs.find(j => j.id===shift.jobId);
+                              const col = job ? JOB_COLORS.find(c => c.id===job.colorId)||JOB_COLORS[0] : JOB_COLORS[0];
+                              const h = calculateShiftHours(shift.startTime, shift.endTime, shift.unpaidBreakHours);
                               return (
-                                <div key={shift.id} className={`text-[10px] sm:text-xs px-1.5 py-0.5 rounded ${color.lightBg} ${color.text} font-medium truncate flex items-center justify-between gap-1 group/shift`}>
-                                  <div className="flex items-center gap-1 truncate">
-                                    <div className={`w-1.5 h-1.5 rounded-full ${color.bg} shrink-0`}></div>
-                                    <span className="truncate">{hours.toFixed(1)}h</span>
+                                <div key={shift.id} className="flex items-center gap-0.5 group/shift">
+                                  <div className={`w-1.5 h-1.5 rounded-full ${col.bg} shrink-0 sm:hidden`} />
+                                  <div className={`hidden sm:flex items-center justify-between gap-1 w-full text-[10px] px-1.5 py-0.5 rounded ${col.lightBg} ${col.text} font-medium`}>
+                                    <div className="flex items-center gap-1 truncate"><div className={`w-1.5 h-1.5 rounded-full ${col.bg} shrink-0`} /><span className="truncate">{h.toFixed(1)}h</span></div>
+                                    <button onClick={e => { e.stopPropagation(); setCopiedShift(shift); }} className="opacity-0 group-hover/shift:opacity-100 p-0.5 hover:bg-black/10 dark:hover:bg-white/20 rounded transition-opacity" title="Copy"><Copy className="w-2.5 h-2.5" /></button>
                                   </div>
-                                  <button 
-                                    onClick={(e) => { e.stopPropagation(); setCopiedShift(shift); }}
-                                    className="opacity-0 group-hover/shift:opacity-100 p-0.5 hover:bg-black/10 dark:hover:bg-white/20 rounded transition-opacity"
-                                    title="Copy Shift"
-                                  >
-                                    <Copy className="w-3 h-3" />
-                                  </button>
                                 </div>
                               );
                             })}
                           </div>
-
-                          {holidayName && dayShifts.length === 0 && (
-                            <div className="mt-auto w-full text-[10px] text-amber-600 font-medium leading-tight truncate hidden sm:block" title={holidayName}>
-                              {holidayName}
-                            </div>
-                          )}
+                          {holiday && dayShifts.length===0 && <p className="hidden sm:block mt-auto w-full text-[9px] text-amber-500 font-medium leading-tight truncate" title={holiday}>{holiday}</p>}
                         </div>
                       );
                     })}
@@ -864,393 +355,272 @@ export default function App() {
           )}
 
           {activeTab === 'monthly_income' && (
-            <div className="bg-white rounded-2xl shadow-sm border border-neutral-100 overflow-hidden">
-              <div className="p-6 border-b border-neutral-100 flex items-center justify-between">
-                <h2 className="text-lg font-semibold flex items-center gap-2">
-                  <Calendar className="w-5 h-5 text-indigo-600" />
-                  Monthly Income Breakdown
-                </h2>
-                <div className="flex items-center gap-2">
-                  <button onClick={() => setCurrentDate(subMonths(currentDate, 1))} className="p-2 hover:bg-neutral-100 rounded-full transition-colors">
-                    <ChevronLeft className="w-5 h-5" />
-                  </button>
-                  <span className="text-sm font-medium px-2">{format(currentDate, 'MMMM yyyy')}</span>
-                  <button onClick={() => setCurrentDate(addMonths(currentDate, 1))} className="p-2 hover:bg-neutral-100 rounded-full transition-colors">
-                    <ChevronRight className="w-5 h-5" />
-                  </button>
+            <div className="bg-white dark:bg-neutral-800 rounded-2xl shadow-sm border border-neutral-100 dark:border-neutral-700 overflow-hidden transition-colors">
+              <div className="p-5 border-b border-neutral-100 dark:border-neutral-700 flex items-center justify-between">
+                <h2 className="text-base font-semibold flex items-center gap-2 dark:text-white"><Calendar className="w-4 h-4 text-indigo-600 dark:text-indigo-400" /> Monthly Income — {format(currentDate, 'MMMM yyyy')}</h2>
+                <div className="flex items-center gap-1">
+                  <button onClick={() => setCurrentDate(subMonths(currentDate,1))} className="p-1.5 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded-full transition-colors dark:text-white"><ChevronLeft className="w-4 h-4" /></button>
+                  <button onClick={() => setCurrentDate(addMonths(currentDate,1))} className="p-1.5 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded-full transition-colors dark:text-white"><ChevronRight className="w-4 h-4" /></button>
                 </div>
               </div>
-              <div className="p-6">
-                {jobs.filter(j => j.payrollCycle.type === 'end_of_month').length === 0 ? (
-                  <div className="text-center py-8 text-neutral-500">No monthly jobs found.</div>
-                ) : (
-                  <div className="space-y-6">
-                    {jobs.filter(j => j.payrollCycle.type === 'end_of_month').map(job => {
-                      const color = JOB_COLORS.find(c => c.id === job.colorId) || JOB_COLORS[0];
-                      const jobShifts = currentMonthPayrollShifts.filter(s => s.jobId === job.id);
-                      
-                      let jobGross = 0;
-                      let totalHours = 0;
-                      
-                      jobShifts.forEach(shift => {
-                        const date = parseISO(shift.date);
-                        let rate = job.rates.weekday;
-                        if (shift.isPublicHoliday) rate = job.rates.publicHoliday;
-                        else if (isWeekend(date)) rate = job.rates.weekend;
-                        
-                        const hours = calculateShiftHours(shift.startTime, shift.endTime, shift.unpaidBreakHours);
-                        jobGross += (hours * rate) + (shift.allowance || 0) - (shift.deduction || 0);
-                        totalHours += hours;
-                      });
-
-                      const { employeeCpf, employerCpf } = calculateCpf(jobGross);
-
+              <div className="p-5">
+                {jobs.filter(j => j.payrollCycle.type==='end_of_month').length === 0
+                  ? <p className="text-center py-8 text-neutral-400 text-sm">No monthly jobs configured.</p>
+                  : <div className="space-y-4">
+                    {jobs.filter(j => j.payrollCycle.type==='end_of_month').map(job => {
+                      const col = JOB_COLORS.find(c => c.id===job.colorId)||JOB_COLORS[0];
+                      const js  = currentMonthPayrollShifts.filter(s => s.jobId===job.id);
+                      const { grossPay, totalHours, employeeCpf, employerCpf, netPay } = calcPayrollSummary(js, jobs, ageGroup);
                       return (
-                        <div key={job.id} className="border border-neutral-200 rounded-xl overflow-hidden">
-                          <div className={`p-4 ${color.lightBg} border-b ${color.border} flex items-center justify-between`}>
-                            <div className="flex items-center gap-2">
-                              <div className={`w-3 h-3 rounded-full ${color.bg}`}></div>
-                              <h3 className={`font-semibold ${color.text}`}>{job.title}</h3>
-                            </div>
-                            <span className={`text-sm font-medium ${color.text}`}>Cutoff: {job.payrollCycle.cutoffDay}</span>
+                        <div key={job.id} className="border border-neutral-200 dark:border-neutral-700 rounded-xl overflow-hidden">
+                          <div className={`p-3.5 ${col.lightBg} dark:bg-neutral-700/40 border-b ${col.border} dark:border-neutral-700 flex items-center justify-between`}>
+                            <div className="flex items-center gap-2"><div className={`w-2.5 h-2.5 rounded-full ${col.bg}`} /><span className={`font-semibold text-sm ${col.text} dark:text-white`}>{job.title}</span></div>
+                            <span className="text-xs text-neutral-500 dark:text-neutral-400">Cutoff: {job.payrollCycle.cutoffDay}</span>
                           </div>
-                          <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-4">
-                            <div>
-                              <p className="text-xs text-neutral-500 mb-1">Total Hours</p>
-                              <p className="font-medium">{totalHours.toFixed(1)}h</p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-neutral-500 mb-1">Gross Pay</p>
-                              <p className="font-medium">${jobGross.toFixed(2)}</p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-neutral-500 mb-1">Employee CPF</p>
-                              <p className="font-medium text-rose-600">-${employeeCpf.toFixed(2)}</p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-neutral-500 mb-1">Net Pay</p>
-                              <p className="font-semibold text-emerald-600">${(jobGross - employeeCpf).toFixed(2)}</p>
-                            </div>
+                          <div className="p-4 grid grid-cols-2 md:grid-cols-5 gap-4 dark:text-white">
+                            {[{ l:'Hours', v:`${totalHours.toFixed(1)}h`, c:'' }, { l:'Gross', v:`$${grossPay.toFixed(2)}`, c:'' }, { l:'Emp CPF', v:`-$${employeeCpf.toFixed(2)}`, c:'text-rose-600 dark:text-rose-400' }, { l:'Empr CPF', v:`+$${employerCpf.toFixed(2)}`, c:'text-indigo-600 dark:text-indigo-400' }, { l:'Net Pay', v:`$${netPay.toFixed(2)}`, c:'text-emerald-600 dark:text-emerald-400 font-semibold' }].map(({ l, v, c }) => (
+                              <div key={l}><p className="text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">{l}</p><p className={`text-sm font-medium ${c}`}>{v}</p></div>
+                            ))}
                           </div>
+                          {js.length > 0 && (
+                            <div className="border-t border-neutral-100 dark:border-neutral-700 divide-y divide-neutral-50 dark:divide-neutral-700/50">
+                              {js.map(shift => {
+                                const d = parseISO(shift.date);
+                                const rate = shift.isPublicHoliday ? job.rates.publicHoliday : isWeekend(d) ? job.rates.weekend : job.rates.weekday;
+                                const h = calculateShiftHours(shift.startTime, shift.endTime, shift.unpaidBreakHours);
+                                return (
+                                  <div key={shift.id} className="px-4 py-2 flex items-center justify-between text-xs text-neutral-500 dark:text-neutral-400">
+                                    <div className="flex items-center gap-3 flex-wrap">
+                                      <span className="font-medium text-neutral-700 dark:text-neutral-200 w-24">{format(d,'EEE, d MMM')}</span>
+                                      <span>{shift.startTime}–{shift.endTime}</span>
+                                      <span>{h.toFixed(1)}h @ ${rate}/h</span>
+                                      {shift.isPublicHoliday && <span className="text-amber-500 font-medium">PH</span>}
+                                      {shift.notes && <span className="flex items-center gap-1 text-neutral-400 italic truncate max-w-[120px]"><MessageSquare className="w-3 h-3 shrink-0" />{shift.notes}</span>}
+                                    </div>
+                                    <span className="font-medium text-neutral-700 dark:text-neutral-200 shrink-0">${calcShiftGross(shift, job).toFixed(2)}</span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
                         </div>
                       );
                     })}
                   </div>
-                )}
+                }
               </div>
             </div>
           )}
 
           {activeTab === 'event_income' && (
             <div className="bg-white dark:bg-neutral-800 rounded-2xl shadow-sm border border-neutral-100 dark:border-neutral-700 overflow-hidden transition-colors">
-              <div className="p-6 border-b border-neutral-100 dark:border-neutral-700">
-                <h2 className="text-lg font-semibold flex items-center gap-2 dark:text-white">
-                  <FileText className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
-                  Event / Gig Income Breakdown
-                </h2>
+              <div className="p-5 border-b border-neutral-100 dark:border-neutral-700">
+                <h2 className="text-base font-semibold flex items-center gap-2 dark:text-white"><FileText className="w-4 h-4 text-indigo-600 dark:text-indigo-400" /> Event / Gig Income</h2>
               </div>
-              <div className="p-6">
-                {jobs.filter(j => j.payrollCycle.type === 'end_of_event').length === 0 ? (
-                  <div className="text-center py-8 text-neutral-500 dark:text-neutral-400">No event-based jobs found.</div>
-                ) : (
-                  <div className="space-y-6">
-                    {jobs.filter(j => j.payrollCycle.type === 'end_of_event').map(job => {
-                      const color = JOB_COLORS.find(c => c.id === job.colorId) || JOB_COLORS[0];
-                      const jobShifts = eventPayrollShifts.filter(s => s.jobId === job.id);
-                      
-                      let jobGross = 0;
-                      let totalHours = 0;
-                      
-                      jobShifts.forEach(shift => {
-                        const date = parseISO(shift.date);
-                        let rate = job.rates.weekday;
-                        if (shift.isPublicHoliday) rate = job.rates.publicHoliday;
-                        else if (isWeekend(date)) rate = job.rates.weekend;
-                        
-                        const hours = calculateShiftHours(shift.startTime, shift.endTime, shift.unpaidBreakHours);
-                        jobGross += (hours * rate) + (shift.allowance || 0) - (shift.deduction || 0);
-                        totalHours += hours;
-                      });
-
-                      const { employeeCpf, employerCpf } = calculateCpf(jobGross);
-
+              <div className="p-5">
+                {jobs.filter(j => j.payrollCycle.type==='end_of_event').length === 0
+                  ? <p className="text-center py-8 text-neutral-400 text-sm">No event-based jobs configured.</p>
+                  : <div className="space-y-4">
+                    {jobs.filter(j => j.payrollCycle.type==='end_of_event').map(job => {
+                      const col = JOB_COLORS.find(c => c.id===job.colorId)||JOB_COLORS[0];
+                      const js  = eventPayrollShifts.filter(s => s.jobId===job.id);
+                      const { grossPay, totalHours, employeeCpf, employerCpf, netPay } = calcPayrollSummary(js, jobs, ageGroup);
                       return (
                         <div key={job.id} className="border border-neutral-200 dark:border-neutral-700 rounded-xl overflow-hidden">
-                          <div className={`p-4 ${color.lightBg} dark:bg-neutral-800/50 border-b ${color.border} dark:border-neutral-700 flex items-center justify-between`}>
-                            <div className="flex items-center gap-2">
-                              <div className={`w-3 h-3 rounded-full ${color.bg}`}></div>
-                              <h3 className={`font-semibold ${color.text} dark:text-white`}>{job.title}</h3>
-                            </div>
-                            <span className={`text-sm font-medium ${color.text} dark:text-neutral-400`}>
-                              Event Ends: {job.payrollCycle.endDate ? format(parseISO(job.payrollCycle.endDate), 'MMM d, yyyy') : 'Not set'}
-                            </span>
+                          <div className={`p-3.5 ${col.lightBg} dark:bg-neutral-700/40 border-b ${col.border} dark:border-neutral-700 flex items-center justify-between`}>
+                            <div className="flex items-center gap-2"><div className={`w-2.5 h-2.5 rounded-full ${col.bg}`} /><span className={`font-semibold text-sm ${col.text} dark:text-white`}>{job.title}</span></div>
+                            <span className="text-xs text-neutral-500 dark:text-neutral-400">Ends: {job.payrollCycle.endDate ? format(parseISO(job.payrollCycle.endDate),'MMM d, yyyy') : 'Not set'}</span>
                           </div>
                           <div className="p-4 grid grid-cols-2 md:grid-cols-5 gap-4 dark:text-white">
-                            <div>
-                              <p className="text-xs text-neutral-500 dark:text-neutral-400 mb-1">Total Hours</p>
-                              <p className="font-medium">{totalHours.toFixed(1)}h</p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-neutral-500 dark:text-neutral-400 mb-1">Gross Pay</p>
-                              <p className="font-medium">${jobGross.toFixed(2)}</p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-neutral-500 dark:text-neutral-400 mb-1">Employee CPF</p>
-                              <p className="font-medium text-rose-600 dark:text-rose-400">-${employeeCpf.toFixed(2)}</p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-neutral-500 dark:text-neutral-400 mb-1">Employer CPF</p>
-                              <p className="font-medium text-indigo-600 dark:text-indigo-400">+${employerCpf.toFixed(2)}</p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-neutral-500 dark:text-neutral-400 mb-1">Net Pay</p>
-                              <p className="font-semibold text-emerald-600 dark:text-emerald-400">${(jobGross - employeeCpf).toFixed(2)}</p>
-                            </div>
+                            {[{ l:'Hours', v:`${totalHours.toFixed(1)}h`, c:'' }, { l:'Gross', v:`$${grossPay.toFixed(2)}`, c:'' }, { l:'Emp CPF', v:`-$${employeeCpf.toFixed(2)}`, c:'text-rose-600 dark:text-rose-400' }, { l:'Empr CPF', v:`+$${employerCpf.toFixed(2)}`, c:'text-indigo-600 dark:text-indigo-400' }, { l:'Net Pay', v:`$${netPay.toFixed(2)}`, c:'text-emerald-600 dark:text-emerald-400 font-semibold' }].map(({ l, v, c }) => (
+                              <div key={l}><p className="text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">{l}</p><p className={`text-sm font-medium ${c}`}>{v}</p></div>
+                            ))}
                           </div>
                         </div>
                       );
                     })}
                   </div>
-                )}
+                }
               </div>
             </div>
           )}
 
           {activeTab === 'dashboard' && (
-            <div className="space-y-6 animate-in fade-in duration-300">
-              {/* Goal Tracking */}
-              <div className="bg-white dark:bg-neutral-800 rounded-2xl shadow-sm border border-neutral-100 dark:border-neutral-700 p-6 transition-colors">
+            <div className="space-y-5">
+              <div className="bg-white dark:bg-neutral-800 rounded-2xl shadow-sm border border-neutral-100 dark:border-neutral-700 p-5 transition-colors">
                 <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-lg font-semibold flex items-center gap-2 dark:text-white">
-                    <Target className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
-                    Monthly Income Goal
-                  </h2>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm text-neutral-500 dark:text-neutral-400">Target: $</span>
-                    <input 
-                      type="number" 
-                      value={monthlyGoal}
-                      onChange={(e) => setMonthlyGoal(Number(e.target.value))}
-                      className="w-24 px-2 py-1 text-sm bg-neutral-50 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded focus:ring-2 focus:ring-indigo-500 outline-none dark:text-white"
-                    />
+                  <h2 className="text-base font-semibold flex items-center gap-2 dark:text-white"><Target className="w-4 h-4 text-indigo-600 dark:text-indigo-400" /> Monthly Goal</h2>
+                  <div className="flex items-center gap-1.5 text-sm text-neutral-500 dark:text-neutral-400">
+                    <span>$</span>
+                    <input type="number" value={monthlyGoal} onChange={e => setMonthlyGoal(Number(e.target.value))} className="w-24 px-2 py-1 text-sm bg-neutral-50 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 dark:text-white" />
                   </div>
                 </div>
-                <div className="space-y-2">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-neutral-600 dark:text-neutral-300">Current Net Pay: <span className="font-semibold text-emerald-600 dark:text-emerald-400">${monthlyCalculations.netPay.toFixed(2)}</span></span>
-                    <span className="text-neutral-600 dark:text-neutral-300">{Math.min(100, (monthlyCalculations.netPay / monthlyGoal) * 100).toFixed(1)}%</span>
+                <div className="space-y-1.5 mb-5">
+                  <div className="flex justify-between text-xs text-neutral-500 dark:text-neutral-400">
+                    <span>Net Pay: <span className="font-semibold text-emerald-600 dark:text-emerald-400">${monthlyCalc.netPay.toFixed(2)}</span></span>
+                    <span>{Math.min(100,(monthlyCalc.netPay/monthlyGoal)*100).toFixed(1)}%</span>
                   </div>
-                  <div className="w-full h-4 bg-neutral-100 dark:bg-neutral-700 rounded-full overflow-hidden">
-                    <div 
-                      className="h-full bg-indigo-500 transition-all duration-500 ease-out"
-                      style={{ width: `${Math.min(100, (monthlyCalculations.netPay / monthlyGoal) * 100)}%` }}
-                    />
+                  <div className="w-full h-3 bg-neutral-100 dark:bg-neutral-700 rounded-full overflow-hidden">
+                    <div className={`h-full rounded-full transition-all duration-500 ${monthlyCalc.netPay>=monthlyGoal ? 'bg-emerald-500' : 'bg-indigo-500'}`} style={{ width:`${Math.min(100,(monthlyCalc.netPay/monthlyGoal)*100)}%` }} />
                   </div>
-                  <p className="text-xs text-neutral-500 dark:text-neutral-400 text-right">
-                    {monthlyCalculations.netPay >= monthlyGoal ? 'Goal reached! 🎉' : `$${(monthlyGoal - monthlyCalculations.netPay).toFixed(2)} to go`}
-                  </p>
+                  <p className="text-xs text-right text-neutral-400">{monthlyCalc.netPay>=monthlyGoal ? '🎉 Goal reached!' : `$${incomeProjection.gap.toFixed(2)} remaining`}</p>
                 </div>
+
+                {incomeProjection.gap > 0 && jobs.length > 0 && (
+                  <div className="border-t border-neutral-100 dark:border-neutral-700 pt-4">
+                    <h3 className="text-sm font-semibold flex items-center gap-2 dark:text-white mb-3"><Lightbulb className="w-4 h-4 text-amber-500" /> How to close the gap</h3>
+                    <div className="space-y-2">
+                      {incomeProjection.recommendations.map(({ job, hoursNeeded, grossNeeded }) => {
+                        const col = JOB_COLORS.find(c => c.id===job.colorId)||JOB_COLORS[0];
+                        const dailyHours = incomeProjection.daysLeft > 0 ? (hoursNeeded/incomeProjection.daysLeft).toFixed(1) : '—';
+                        return (
+                          <div key={job.id} className={`p-3 rounded-xl border ${col.border} ${col.lightBg} dark:bg-neutral-700/30 dark:border-neutral-700`}>
+                            <div className="flex items-center justify-between mb-2">
+                              <div className="flex items-center gap-1.5"><div className={`w-2 h-2 rounded-full ${col.bg}`} /><span className={`text-sm font-semibold ${col.text} dark:text-white`}>{job.title}</span></div>
+                              <span className="text-xs text-neutral-500 dark:text-neutral-400">${job.rates.weekday}/h</span>
+                            </div>
+                            <div className="grid grid-cols-3 gap-2 text-xs">
+                              <div><p className="text-neutral-400 dark:text-neutral-500">Hours needed</p><p className="font-semibold text-neutral-700 dark:text-neutral-200">{hoursNeeded.toFixed(1)}h</p></div>
+                              <div><p className="text-neutral-400 dark:text-neutral-500">~8h shifts</p><p className="font-semibold text-neutral-700 dark:text-neutral-200">{Math.ceil(hoursNeeded/8)}</p></div>
+                              <div><p className="text-neutral-400 dark:text-neutral-500">Daily avg</p><p className="font-semibold text-neutral-700 dark:text-neutral-200">{dailyHours}h/day</p></div>
+                            </div>
+                            {incomeProjection.daysLeft <= 5 && <p className="mt-1.5 text-[11px] text-amber-600 dark:text-amber-400 flex items-center gap-1"><Zap className="w-3 h-3" /> Only {incomeProjection.daysLeft} days left this month</p>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+                {incomeProjection.gap <= 0 && <div className="border-t border-neutral-100 dark:border-neutral-700 pt-4 text-center text-sm text-emerald-600 dark:text-emerald-400">You've hit your goal — nice work 🎯</div>}
               </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* Month over Month Bar Chart */}
-                <div className="bg-white dark:bg-neutral-800 rounded-2xl shadow-sm border border-neutral-100 dark:border-neutral-700 p-6 transition-colors">
-                  <h2 className="text-lg font-semibold flex items-center gap-2 mb-6 dark:text-white">
-                    <TrendingUp className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
-                    Income Trend (Last 6 Months)
-                  </h2>
-                  <div className="h-64 w-full">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                <div className="bg-white dark:bg-neutral-800 rounded-2xl shadow-sm border border-neutral-100 dark:border-neutral-700 p-5 transition-colors">
+                  <h2 className="text-sm font-semibold flex items-center gap-2 mb-4 dark:text-white"><TrendingUp className="w-4 h-4 text-indigo-600 dark:text-indigo-400" /> Income Trend (6 Months)</h2>
+                  <div className="h-52 w-full">
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={dashboardAnalytics.monthlyTrend} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDarkMode ? '#404040' : '#e5e5e5'} />
-                        <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: isDarkMode ? '#a3a3a3' : '#737373' }} dy={10} />
-                        <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: isDarkMode ? '#a3a3a3' : '#737373' }} tickFormatter={(value) => `$${value}`} />
-                        <Tooltip 
-                          cursor={{ fill: isDarkMode ? '#262626' : '#f5f5f5' }}
-                          contentStyle={{ backgroundColor: isDarkMode ? '#171717' : '#ffffff', borderColor: isDarkMode ? '#404040' : '#e5e5e5', borderRadius: '8px', color: isDarkMode ? '#ffffff' : '#000000' }}
-                          formatter={(value: number) => [`$${value.toFixed(2)}`, 'Net Pay']}
-                        />
-                        <Bar dataKey="net" fill="#6366f1" radius={[4, 4, 0, 0]} />
+                      <BarChart data={dashboardAnalytics.monthlyTrend} margin={{ top:8, right:8, left:-20, bottom:0 }}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDarkMode ? '#3a3a3a' : '#e5e5e5'} />
+                        <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fontSize:11, fill: isDarkMode ? '#a3a3a3' : '#737373' }} dy={8} />
+                        <YAxis axisLine={false} tickLine={false} tick={{ fontSize:11, fill: isDarkMode ? '#a3a3a3' : '#737373' }} tickFormatter={v => `$${v}`} />
+                        <Tooltip cursor={{ fill: isDarkMode ? '#262626' : '#f5f5f5' }} contentStyle={{ backgroundColor: isDarkMode ? '#1a1a1a' : '#fff', borderColor: isDarkMode ? '#3a3a3a' : '#e5e5e5', borderRadius:8, fontSize:12, color: isDarkMode ? '#fff' : '#000' }} formatter={(v: number) => [`$${v.toFixed(2)}`, 'Net Pay']} />
+                        <Bar dataKey="net" fill="#6366f1" radius={[4,4,0,0]} />
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
                 </div>
-
-                {/* Earnings by Job Pie Chart */}
-                <div className="bg-white dark:bg-neutral-800 rounded-2xl shadow-sm border border-neutral-100 dark:border-neutral-700 p-6 transition-colors">
-                  <h2 className="text-lg font-semibold flex items-center gap-2 mb-6 dark:text-white">
-                    <Briefcase className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
-                    Earnings by Job (This Month)
-                  </h2>
-                  <div className="h-64 w-full">
+                <div className="bg-white dark:bg-neutral-800 rounded-2xl shadow-sm border border-neutral-100 dark:border-neutral-700 p-5 transition-colors">
+                  <h2 className="text-sm font-semibold flex items-center gap-2 mb-4 dark:text-white"><Briefcase className="w-4 h-4 text-indigo-600 dark:text-indigo-400" /> Earnings by Job</h2>
+                  <div className="h-52 w-full">
                     {dashboardAnalytics.jobEarnings.length > 0 ? (
                       <ResponsiveContainer width="100%" height="100%">
                         <PieChart>
-                          <Pie
-                            data={dashboardAnalytics.jobEarnings}
-                            cx="50%"
-                            cy="50%"
-                            innerRadius={60}
-                            outerRadius={80}
-                            paddingAngle={5}
-                            dataKey="value"
-                          >
-                            {dashboardAnalytics.jobEarnings.map((entry, index) => (
-                              <Cell key={`cell-${index}`} fill={entry.color} />
-                            ))}
+                          <Pie data={dashboardAnalytics.jobEarnings} cx="50%" cy="50%" innerRadius={55} outerRadius={75} paddingAngle={4} dataKey="value">
+                            {dashboardAnalytics.jobEarnings.map((e, i) => <Cell key={i} fill={e.color} />)}
                           </Pie>
-                          <Tooltip 
-                            contentStyle={{ backgroundColor: isDarkMode ? '#171717' : '#ffffff', borderColor: isDarkMode ? '#404040' : '#e5e5e5', borderRadius: '8px', color: isDarkMode ? '#ffffff' : '#000000' }}
-                            formatter={(value: number) => [`$${value.toFixed(2)}`, 'Earnings']}
-                          />
-                          <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize: '12px', color: isDarkMode ? '#a3a3a3' : '#737373' }} />
+                          <Tooltip contentStyle={{ backgroundColor: isDarkMode ? '#1a1a1a' : '#fff', borderColor: isDarkMode ? '#3a3a3a' : '#e5e5e5', borderRadius:8, fontSize:12, color: isDarkMode ? '#fff' : '#000' }} formatter={(v: number) => [`$${v.toFixed(2)}`, 'Earnings']} />
+                          <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize:11, color: isDarkMode ? '#a3a3a3' : '#737373' }} />
                         </PieChart>
                       </ResponsiveContainer>
-                    ) : (
-                      <div className="h-full flex items-center justify-center text-neutral-500 dark:text-neutral-400 text-sm">
-                        No earnings recorded for this month yet.
-                      </div>
-                    )}
+                    ) : <div className="h-full flex items-center justify-center text-neutral-400 text-sm">No earnings this month yet.</div>}
                   </div>
                 </div>
               </div>
             </div>
           )}
-
         </div>
       </main>
+
+      {/* MODALS */}
+
+      {/* Day Picker */}
+      {isDayPickerOpen && selectedDate && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-xl w-full max-w-sm overflow-hidden">
+            <div className="p-5 border-b border-neutral-100 dark:border-neutral-800 flex items-start justify-between">
+              <div><h3 className="text-base font-semibold dark:text-white">{format(parseISO(selectedDate),'EEEE, MMM d')}</h3><p className="text-xs text-neutral-500 mt-0.5">Multiple shifts — select one</p></div>
+              <button onClick={() => setIsDayPickerOpen(false)} className="text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="p-4 space-y-2">
+              {shifts.filter(s => s.date===selectedDate).map(shift => {
+                const job = jobs.find(j => j.id===shift.jobId);
+                const col = job ? JOB_COLORS.find(c => c.id===job.colorId)||JOB_COLORS[0] : JOB_COLORS[0];
+                const h = calculateShiftHours(shift.startTime, shift.endTime, shift.unpaidBreakHours);
+                return (
+                  <button key={shift.id} onClick={() => { setTempShift(shift); setIsDayPickerOpen(false); setIsShiftModalOpen(true); }} className={`w-full flex items-center gap-3 p-3 rounded-xl border ${col.border} ${col.lightBg} hover:brightness-95 transition-all text-left`}>
+                    <div className={`w-2.5 h-2.5 rounded-full ${col.bg} shrink-0`} />
+                    <div className="flex-1 min-w-0"><p className={`font-medium text-sm ${col.text}`}>{job?.title??'Unknown'}</p><p className="text-xs text-neutral-500">{shift.startTime}–{shift.endTime} · {h.toFixed(1)}h</p>{shift.notes && <p className="text-xs text-neutral-400 italic truncate">{shift.notes}</p>}</div>
+                    <Edit2 className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+                  </button>
+                );
+              })}
+              <button onClick={() => { setTempShift({ jobId:jobs[0]?.id||'', date:selectedDate, startTime:'09:00', endTime:'17:00', unpaidBreakHours:1, isPublicHoliday:!!SG_PUBLIC_HOLIDAYS[selectedDate] }); setIsDayPickerOpen(false); setIsShiftModalOpen(true); }} className="w-full flex items-center gap-2 p-3 rounded-xl border border-dashed border-neutral-300 dark:border-neutral-600 text-neutral-500 dark:text-neutral-400 hover:border-indigo-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-all text-sm font-medium">
+                <Plus className="w-4 h-4" /> Add another shift
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Shift Modal */}
       {isShiftModalOpen && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200">
-            <div className="p-6 border-b border-neutral-100 dark:border-neutral-800 flex items-start justify-between">
-              <h3 className="text-lg font-semibold flex flex-col dark:text-white">
-                <span>{selectedDate ? format(parseISO(selectedDate), 'EEEE, MMM d, yyyy') : ''}</span>
-                {selectedDate && SG_PUBLIC_HOLIDAYS[selectedDate] && (
-                  <span className="text-sm text-amber-600 dark:text-amber-500 font-medium mt-0.5">{SG_PUBLIC_HOLIDAYS[selectedDate]}</span>
-                )}
+          <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-xl w-full max-w-md overflow-hidden max-h-[90vh] flex flex-col">
+            <div className="p-5 border-b border-neutral-100 dark:border-neutral-800 flex items-start justify-between shrink-0">
+              <h3 className="text-base font-semibold dark:text-white flex flex-col">
+                <span>{selectedDate ? format(parseISO(selectedDate),'EEEE, MMM d, yyyy') : ''}</span>
+                {selectedDate && SG_PUBLIC_HOLIDAYS[selectedDate] && <span className="text-xs text-amber-500 font-medium mt-0.5">{SG_PUBLIC_HOLIDAYS[selectedDate]}</span>}
               </h3>
-              <button onClick={() => setIsShiftModalOpen(false)} className="text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 mt-1">
-                <X className="w-5 h-5" />
-              </button>
+              <button onClick={() => setIsShiftModalOpen(false)} className="text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 mt-0.5"><X className="w-5 h-5" /></button>
             </div>
-            <div className="p-6 space-y-4">
-              {jobs.length === 0 ? (
-                <div className="text-center py-4">
-                  <p className="text-neutral-500 dark:text-neutral-400 mb-4">Please add a job first before adding shifts.</p>
-                  <button onClick={() => { setIsShiftModalOpen(false); openNewJobModal(); }} className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700">
-                    Add Job
-                  </button>
-                </div>
-              ) : (
-                <>
+            <div className="p-5 space-y-4 overflow-y-auto flex-1">
+              {jobs.length === 0
+                ? <div className="text-center py-4"><p className="text-neutral-500 text-sm mb-3">Add a job first.</p><button onClick={() => { setIsShiftModalOpen(false); openNewJobModal(); }} className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700">Add Job</button></div>
+                : <>
                   <div>
-                    <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">Job</label>
-                    <select 
-                      value={tempShift.jobId || ''} 
-                      onChange={e => setTempShift({...tempShift, jobId: e.target.value})}
-                      className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all dark:text-white"
-                    >
-                      {jobs.map(job => (
-                        <option key={job.id} value={job.id}>{job.title}</option>
-                      ))}
-                    </select>
+                    <label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-1">Job</label>
+                    <select value={tempShift.jobId||''} onChange={e => setTempShift({ ...tempShift, jobId:e.target.value })} className={ic}>{jobs.map(j => <option key={j.id} value={j.id}>{j.title}</option>)}</select>
                   </div>
-                  
-                  <div className="grid grid-cols-2 gap-4">
+                  {templates.filter(t => t.jobId===tempShift.jobId).length > 0 && (
                     <div>
-                      <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">Start Time</label>
-                      <input 
-                        type="time" 
-                        value={tempShift.startTime || ''} 
-                        onChange={e => setTempShift({...tempShift, startTime: e.target.value})} 
-                        className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all dark:text-white" 
-                      />
+                      <label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-1">Fill from template</label>
+                      <div className="flex flex-wrap gap-1.5">
+                        {templates.filter(t => t.jobId===tempShift.jobId).map(t => (
+                          <button key={t.id} onClick={() => setTempShift(p => ({ ...p, startTime:t.startTime, endTime:t.endTime, unpaidBreakHours:t.unpaidBreakHours }))} className="px-2.5 py-1 text-xs bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 rounded-lg hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors font-medium">{t.name}</button>
+                        ))}
+                      </div>
                     </div>
-                    <div>
-                      <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">End Time</label>
-                      <input 
-                        type="time" 
-                        value={tempShift.endTime || ''} 
-                        onChange={e => setTempShift({...tempShift, endTime: e.target.value})} 
-                        className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all dark:text-white" 
-                      />
-                    </div>
+                  )}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div><label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-1">Start</label><input type="time" value={tempShift.startTime||''} onChange={e => setTempShift({ ...tempShift, startTime:e.target.value })} className={ic} /></div>
+                    <div><label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-1">End</label><input type="time" value={tempShift.endTime||''} onChange={e => setTempShift({ ...tempShift, endTime:e.target.value })} className={ic} /></div>
                   </div>
-
+                  <div><label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-1">Unpaid Break (hrs)</label><input type="number" min="0" step="0.5" value={tempShift.unpaidBreakHours||0} onChange={e => setTempShift({ ...tempShift, unpaidBreakHours:Number(e.target.value) })} className={ic} /></div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div><label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-1">Allowance ($)</label><input type="number" min="0" step="0.01" value={tempShift.allowance||''} onChange={e => setTempShift({ ...tempShift, allowance:Number(e.target.value) })} className={ic} placeholder="0.00" /></div>
+                    <div><label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-1">Deduction ($)</label><input type="number" min="0" step="0.01" value={tempShift.deduction||''} onChange={e => setTempShift({ ...tempShift, deduction:Number(e.target.value) })} className={ic} placeholder="0.00" /></div>
+                  </div>
                   <div>
-                    <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">Unpaid Break (Hours)</label>
-                    <input 
-                      type="number" 
-                      min="0" 
-                      step="0.5"
-                      value={tempShift.unpaidBreakHours || 0} 
-                      onChange={e => setTempShift({...tempShift, unpaidBreakHours: Number(e.target.value)})} 
-                      className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all dark:text-white" 
-                    />
+                    <label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-1 flex items-center gap-1"><MessageSquare className="w-3.5 h-3.5" /> Notes</label>
+                    <input type="text" value={tempShift.notes||''} onChange={e => setTempShift({ ...tempShift, notes:e.target.value })} className={ic} placeholder="e.g. Covered for colleague, training day…" />
                   </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">Allowance ($)</label>
-                      <input 
-                        type="number" 
-                        min="0" 
-                        step="0.01"
-                        value={tempShift.allowance || ''} 
-                        onChange={e => setTempShift({...tempShift, allowance: Number(e.target.value)})} 
-                        className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all dark:text-white" 
-                        placeholder="0.00"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">Deduction ($)</label>
-                      <input 
-                        type="number" 
-                        min="0" 
-                        step="0.01"
-                        value={tempShift.deduction || ''} 
-                        onChange={e => setTempShift({...tempShift, deduction: Number(e.target.value)})} 
-                        className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all dark:text-white" 
-                        placeholder="0.00"
-                      />
-                    </div>
+                  <div className="bg-neutral-50 dark:bg-neutral-800/60 p-3 rounded-lg border border-neutral-200 dark:border-neutral-700 flex items-center justify-between">
+                    <span className="text-xs font-medium text-neutral-600 dark:text-neutral-300">Paid Hours</span>
+                    <span className="text-lg font-semibold text-indigo-600 dark:text-indigo-400">{calculateShiftHours(tempShift.startTime, tempShift.endTime, tempShift.unpaidBreakHours).toFixed(2)}h</span>
                   </div>
-
-                  <div className="bg-neutral-50 dark:bg-neutral-800/50 p-3 rounded-lg border border-neutral-200 dark:border-neutral-700 flex items-center justify-between">
-                    <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">Total Paid Hours</span>
-                    <span className="text-lg font-semibold text-indigo-600 dark:text-indigo-400">
-                      {calculateShiftHours(tempShift.startTime, tempShift.endTime, tempShift.unpaidBreakHours).toFixed(2)}h
-                    </span>
-                  </div>
-
-                  <label className="flex items-center gap-3 p-3 border border-neutral-200 dark:border-neutral-700 rounded-lg cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors">
-                    <input 
-                      type="checkbox" 
-                      checked={tempShift.isPublicHoliday || false} 
-                      onChange={e => setTempShift({...tempShift, isPublicHoliday: e.target.checked})}
-                      className="w-4 h-4 text-indigo-600 rounded border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 focus:ring-indigo-500"
-                    />
-                    <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">Mark as Public Holiday</span>
+                  <label className="flex items-center gap-2.5 p-3 border border-neutral-200 dark:border-neutral-700 rounded-lg cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors">
+                    <input type="checkbox" checked={tempShift.isPublicHoliday||false} onChange={e => setTempShift({ ...tempShift, isPublicHoliday:e.target.checked })} className="w-4 h-4 text-indigo-600 rounded border-neutral-300 focus:ring-indigo-500" />
+                    <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">Public Holiday rate</span>
                   </label>
                 </>
-              )}
+              }
             </div>
             {jobs.length > 0 && (
-              <div className="p-6 bg-neutral-50 dark:bg-neutral-800/50 border-t border-neutral-100 dark:border-neutral-800 flex items-center justify-between gap-3">
-                {tempShift.id ? (
-                  <button onClick={handleDeleteShift} className="px-4 py-2 text-sm font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-900/30 rounded-lg transition-colors flex items-center gap-2">
-                    <Trash2 className="w-4 h-4" /> Remove
-                  </button>
-                ) : <div></div>}
+              <div className="p-5 bg-neutral-50 dark:bg-neutral-800/50 border-t border-neutral-100 dark:border-neutral-800 flex items-center justify-between gap-3 shrink-0">
+                {tempShift.id ? <button onClick={handleDeleteShift} className="px-3 py-1.5 text-sm font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-900/30 rounded-lg flex items-center gap-1.5 transition-colors"><Trash2 className="w-4 h-4" /> Remove</button> : <div />}
                 <div className="flex gap-2">
-                  <button onClick={() => setIsShiftModalOpen(false)} className="px-4 py-2 text-sm font-medium text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg transition-colors">
-                    Cancel
-                  </button>
-                  <button onClick={handleSaveShift} className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-colors shadow-sm">
-                    Save Shift
-                  </button>
+                  <button onClick={() => setIsShiftModalOpen(false)} className="px-3 py-1.5 text-sm font-medium text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded-lg transition-colors">Cancel</button>
+                  <button onClick={handleSaveShift} className="px-4 py-1.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-sm transition-colors">Save Shift</button>
                 </div>
               </div>
             )}
@@ -1258,125 +628,131 @@ export default function App() {
         </div>
       )}
 
+      {/* Template Modal */}
+      {isTemplateModalOpen && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
+            <div className="p-5 border-b border-neutral-100 dark:border-neutral-800 flex items-center justify-between">
+              <h3 className="text-base font-semibold dark:text-white">Shift Templates</h3>
+              <button onClick={() => setIsTemplateModalOpen(false)} className="text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="p-5 space-y-4">
+              {templates.length > 0 && (
+                <div className="space-y-2 max-h-40 overflow-y-auto">
+                  {templates.map(t => {
+                    const job = jobs.find(j => j.id===t.jobId);
+                    const col = job ? JOB_COLORS.find(c => c.id===job.colorId)||JOB_COLORS[0] : JOB_COLORS[0];
+                    return (
+                      <div key={t.id} className={`flex items-center justify-between p-2.5 rounded-xl border ${col.border} ${col.lightBg}`}>
+                        <div><p className={`text-sm font-medium ${col.text}`}>{t.name}</p><p className="text-xs text-neutral-500">{job?.title} · {t.startTime}–{t.endTime} · {t.unpaidBreakHours}h break</p></div>
+                        <button onClick={() => setTemplates(prev => prev.filter(x => x.id!==t.id))} className="p-1 text-neutral-400 hover:text-rose-500 transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              <div className="border-t border-neutral-100 dark:border-neutral-700 pt-4 space-y-3">
+                <p className="text-xs font-semibold text-neutral-400 uppercase tracking-wider">New Template</p>
+                <div><label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-1">Name</label><input type="text" value={editingTemplate.name||''} onChange={e => setEditingTemplate(p => ({ ...p, name:e.target.value }))} className={ic} placeholder="e.g. Morning Shift" /></div>
+                <div><label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-1">Job</label><select value={editingTemplate.jobId||''} onChange={e => setEditingTemplate(p => ({ ...p, jobId:e.target.value }))} className={ic}>{jobs.map(j => <option key={j.id} value={j.id}>{j.title}</option>)}</select></div>
+                <div className="grid grid-cols-3 gap-2">
+                  <div><label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-1">Start</label><input type="time" value={editingTemplate.startTime||'09:00'} onChange={e => setEditingTemplate(p => ({ ...p, startTime:e.target.value }))} className={ic} /></div>
+                  <div><label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-1">End</label><input type="time" value={editingTemplate.endTime||'17:00'} onChange={e => setEditingTemplate(p => ({ ...p, endTime:e.target.value }))} className={ic} /></div>
+                  <div><label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-1">Break hrs</label><input type="number" min="0" step="0.5" value={editingTemplate.unpaidBreakHours??1} onChange={e => setEditingTemplate(p => ({ ...p, unpaidBreakHours:Number(e.target.value) }))} className={ic} /></div>
+                </div>
+              </div>
+            </div>
+            <div className="p-5 bg-neutral-50 dark:bg-neutral-800/50 border-t border-neutral-100 dark:border-neutral-800 flex justify-end gap-2">
+              <button onClick={() => setIsTemplateModalOpen(false)} className="px-3 py-1.5 text-sm font-medium text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded-lg transition-colors">Close</button>
+              <button onClick={handleSaveTemplate} disabled={!editingTemplate.name||!editingTemplate.jobId} className="px-4 py-1.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg shadow-sm transition-colors">Save Template</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Recurring Modal */}
+      {isRecurringModalOpen && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
+            <div className="p-5 border-b border-neutral-100 dark:border-neutral-800 flex items-center justify-between">
+              <h3 className="text-base font-semibold dark:text-white">Recurring Shifts</h3>
+              <button onClick={() => setIsRecurringModalOpen(false)} className="text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="p-5 space-y-4">
+              {templates.length === 0
+                ? <div className="text-center py-4"><p className="text-neutral-500 text-sm mb-3">Create a template first.</p><button onClick={() => { setIsRecurringModalOpen(false); setEditingTemplate({ jobId:jobs[0]?.id||'', startTime:'09:00', endTime:'17:00', unpaidBreakHours:1 }); setIsTemplateModalOpen(true); }} className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700">Create Template</button></div>
+                : <>
+                  <div><label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-1">Template</label><select value={editingRecurring.templateId||''} onChange={e => setEditingRecurring(p => ({ ...p, templateId:e.target.value }))} className={ic}><option value="">— select —</option>{templates.map(t => { const job = jobs.find(j => j.id===t.jobId); return <option key={t.id} value={t.id}>{t.name} ({job?.title})</option>; })}</select></div>
+                  <div>
+                    <label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-2">Days of week</label>
+                    <div className="flex gap-1.5">
+                      {['S','M','T','W','T','F','S'].map((d, i) => {
+                        const active = (editingRecurring.daysOfWeek||[]).includes(i);
+                        return <button key={i} onClick={() => setEditingRecurring(p => { const days = p.daysOfWeek||[]; return { ...p, daysOfWeek: active ? days.filter(x => x!==i) : [...days,i] }; })} className={`w-9 h-9 rounded-full text-xs font-semibold transition-colors ${active ? 'bg-indigo-600 text-white' : 'bg-neutral-100 dark:bg-neutral-700 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-600'}`}>{d}</button>;
+                      })}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div><label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-1">Start date</label><input type="date" value={editingRecurring.startDate||''} onChange={e => setEditingRecurring(p => ({ ...p, startDate:e.target.value }))} className={ic} /></div>
+                    <div><label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-1">End date</label><input type="date" value={editingRecurring.endDate||''} onChange={e => setEditingRecurring(p => ({ ...p, endDate:e.target.value }))} className={ic} /></div>
+                  </div>
+                  {editingRecurring.templateId && editingRecurring.startDate && editingRecurring.endDate && (editingRecurring.daysOfWeek?.length??0) > 0 && (() => {
+                    const tmpl = templates.find(t => t.id===editingRecurring.templateId);
+                    if (!tmpl) return null;
+                    const preview = expandRecurringRule(editingRecurring as RecurringRule, tmpl, shifts);
+                    return <div className="bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 p-3 rounded-lg text-xs">Will add <strong>{preview.length}</strong> shift{preview.length!==1?'s':''}. {preview.length===0 && '(All days already have a shift.)'}</div>;
+                  })()}
+                </>
+              }
+            </div>
+            <div className="p-5 bg-neutral-50 dark:bg-neutral-800/50 border-t border-neutral-100 dark:border-neutral-800 flex justify-end gap-2">
+              <button onClick={() => setIsRecurringModalOpen(false)} className="px-3 py-1.5 text-sm font-medium text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded-lg transition-colors">Cancel</button>
+              <button onClick={handleApplyRecurring} disabled={!editingRecurring.templateId||!editingRecurring.startDate||!editingRecurring.endDate||!(editingRecurring.daysOfWeek?.length)} className="px-4 py-1.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg shadow-sm transition-colors">Apply Shifts</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Job Modal */}
       {isJobModalOpen && editingJob && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200">
-            <div className="p-6 border-b border-neutral-100 dark:border-neutral-800 flex items-center justify-between">
-              <h3 className="text-lg font-semibold dark:text-white">{editingJob.id ? 'Edit Job' : 'Add New Job'}</h3>
-              <button onClick={() => setIsJobModalOpen(false)} className="text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300">
-                <X className="w-5 h-5" />
-              </button>
+          <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-xl w-full max-w-md overflow-hidden max-h-[90vh] flex flex-col">
+            <div className="p-5 border-b border-neutral-100 dark:border-neutral-800 flex items-center justify-between shrink-0">
+              <h3 className="text-base font-semibold dark:text-white">{editingJob.id ? 'Edit Job' : 'Add Job'}</h3>
+              <button onClick={() => setIsJobModalOpen(false)} className="text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300"><X className="w-5 h-5" /></button>
             </div>
-            <div className="p-6 space-y-5">
+            <div className="p-5 space-y-5 overflow-y-auto flex-1">
+              <div><label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-1">Job Title</label><input type="text" value={editingJob.title} onChange={e => setEditingJob({ ...editingJob, title:e.target.value })} className={ic} placeholder="e.g. Barista, Tutor" /></div>
               <div>
-                <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">Job Title</label>
-                <input 
-                  type="text" 
-                  value={editingJob.title} 
-                  onChange={e => setEditingJob({...editingJob, title: e.target.value})} 
-                  className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all dark:text-white" 
-                  placeholder="e.g. Barista, Tutor"
-                />
+                <label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-2">Colour</label>
+                <div className="flex flex-wrap gap-2">{JOB_COLORS.map(col => <button key={col.id} onClick={() => setEditingJob({ ...editingJob, colorId:col.id })} className={`w-8 h-8 rounded-full ${col.bg} transition-transform ${editingJob.colorId===col.id ? 'ring-2 ring-offset-2 ring-neutral-800 dark:ring-neutral-200 scale-110' : 'hover:scale-110'}`} />)}</div>
               </div>
-
               <div>
-                <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-2">Color Label</label>
-                <div className="flex flex-wrap gap-2">
-                  {JOB_COLORS.map(color => (
-                    <button
-                      key={color.id}
-                      onClick={() => setEditingJob({...editingJob, colorId: color.id})}
-                      className={`w-8 h-8 rounded-full ${color.bg} flex items-center justify-center transition-transform ${editingJob.colorId === color.id ? 'ring-2 ring-offset-2 ring-neutral-800 dark:ring-neutral-200 scale-110' : 'hover:scale-110'}`}
-                      title={color.id}
-                    />
+                <label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-2 border-b border-neutral-100 dark:border-neutral-800 pb-1.5">Hourly Rates</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {[{ label:'Weekday', key:'weekday' as const }, { label:'Weekend', key:'weekend' as const }, { label:'Holiday', key:'publicHoliday' as const }].map(({ label, key }) => (
+                    <div key={key}><label className="block text-[11px] text-neutral-500 dark:text-neutral-400 mb-1">{label}</label><div className="relative"><span className="absolute left-2 top-1/2 -translate-y-1/2 text-neutral-400 text-xs">$</span><input type="number" value={editingJob.rates[key]} onChange={e => setEditingJob({ ...editingJob, rates:{ ...editingJob.rates, [key]:Number(e.target.value) } })} className="w-full pl-5 pr-2 py-1.5 text-sm bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none dark:text-white" /></div></div>
                   ))}
                 </div>
               </div>
-
-              <div className="space-y-3">
-                <h4 className="text-sm font-medium text-neutral-700 dark:text-neutral-300 border-b border-neutral-100 dark:border-neutral-800 pb-2">Hourly Rates</h4>
-                <div className="grid grid-cols-3 gap-3">
-                  <div>
-                    <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-1">Weekday</label>
-                    <div className="relative">
-                      <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-500 dark:text-neutral-400 text-sm">$</span>
-                      <input type="number" value={editingJob.rates.weekday} onChange={e => setEditingJob({...editingJob, rates: {...editingJob.rates, weekday: Number(e.target.value)}})} className="w-full pl-6 pr-2 py-1.5 text-sm bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none dark:text-white" />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-1">Weekend</label>
-                    <div className="relative">
-                      <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-500 dark:text-neutral-400 text-sm">$</span>
-                      <input type="number" value={editingJob.rates.weekend} onChange={e => setEditingJob({...editingJob, rates: {...editingJob.rates, weekend: Number(e.target.value)}})} className="w-full pl-6 pr-2 py-1.5 text-sm bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none dark:text-white" />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-1">Holiday</label>
-                    <div className="relative">
-                      <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-500 dark:text-neutral-400 text-sm">$</span>
-                      <input type="number" value={editingJob.rates.publicHoliday} onChange={e => setEditingJob({...editingJob, rates: {...editingJob.rates, publicHoliday: Number(e.target.value)}})} className="w-full pl-6 pr-2 py-1.5 text-sm bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none dark:text-white" />
-                    </div>
-                  </div>
+              <div>
+                <label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-2 border-b border-neutral-100 dark:border-neutral-800 pb-1.5">Payroll Cycle</label>
+                <div className="grid grid-cols-2 gap-2 mb-3">
+                  {(['end_of_month','end_of_event'] as const).map(type => (
+                    <button key={type} onClick={() => setEditingJob({ ...editingJob, payrollCycle: type==='end_of_month' ? { type, cutoffDay:31 } : { type, endDate:format(new Date(),'yyyy-MM-dd') } })} className={`px-3 py-2 text-xs font-medium rounded-lg border transition-colors ${editingJob.payrollCycle.type===type ? 'bg-indigo-50 dark:bg-indigo-900/30 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300' : 'bg-white dark:bg-neutral-800 border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-50'}`}>{type==='end_of_month' ? 'End of Month' : 'End of Event'}</button>
+                  ))}
                 </div>
-              </div>
-
-              <div className="space-y-3">
-                <h4 className="text-sm font-medium text-neutral-700 dark:text-neutral-300 border-b border-neutral-100 dark:border-neutral-800 pb-2">Payroll Cycle</h4>
-                <div className="grid grid-cols-2 gap-3">
-                  <button
-                    onClick={() => setEditingJob({...editingJob, payrollCycle: { type: 'end_of_month', cutoffDay: 31 }})}
-                    className={`px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${editingJob.payrollCycle.type === 'end_of_month' ? 'bg-indigo-50 dark:bg-indigo-900/30 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300' : 'bg-white dark:bg-neutral-800 border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-700'}`}
-                  >
-                    End of Month
-                  </button>
-                  <button
-                    onClick={() => setEditingJob({...editingJob, payrollCycle: { type: 'end_of_event', endDate: format(new Date(), 'yyyy-MM-dd') }})}
-                    className={`px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${editingJob.payrollCycle.type === 'end_of_event' ? 'bg-indigo-50 dark:bg-indigo-900/30 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300' : 'bg-white dark:bg-neutral-800 border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-700'}`}
-                  >
-                    End of Event
-                  </button>
-                </div>
-
-                {editingJob.payrollCycle.type === 'end_of_month' ? (
-                  <div>
-                    <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-1">Cutoff Day (1-31)</label>
-                    <input 
-                      type="number" 
-                      min="1" 
-                      max="31"
-                      value={editingJob.payrollCycle.cutoffDay || 31} 
-                      onChange={e => setEditingJob({...editingJob, payrollCycle: { ...editingJob.payrollCycle, cutoffDay: Number(e.target.value) }})} 
-                      className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all dark:text-white" 
-                    />
-                    <p className="text-[10px] text-neutral-500 dark:text-neutral-400 mt-1">Leave as 31 for the last day of the month.</p>
-                  </div>
-                ) : (
-                  <div>
-                    <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-1">Event End Date</label>
-                    <input 
-                      type="date" 
-                      value={editingJob.payrollCycle.endDate || ''} 
-                      onChange={e => setEditingJob({...editingJob, payrollCycle: { ...editingJob.payrollCycle, endDate: e.target.value }})} 
-                      className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all dark:text-white" 
-                    />
-                  </div>
-                )}
+                {editingJob.payrollCycle.type==='end_of_month'
+                  ? <div><label className="block text-[11px] text-neutral-500 mb-1">Cutoff day (1–31)</label><input type="number" min="1" max="31" value={editingJob.payrollCycle.cutoffDay||31} onChange={e => setEditingJob({ ...editingJob, payrollCycle:{ ...editingJob.payrollCycle, cutoffDay:Number(e.target.value) } })} className={ic} /><p className="text-[10px] text-neutral-400 mt-1">31 = last day of month.</p></div>
+                  : <div><label className="block text-[11px] text-neutral-500 mb-1">Event end date</label><input type="date" value={editingJob.payrollCycle.endDate||''} onChange={e => setEditingJob({ ...editingJob, payrollCycle:{ ...editingJob.payrollCycle, endDate:e.target.value } })} className={ic} /></div>
+                }
               </div>
             </div>
-            <div className="p-6 bg-neutral-50 dark:bg-neutral-800/50 border-t border-neutral-100 dark:border-neutral-800 flex items-center justify-between gap-3">
-              {editingJob.id ? (
-                <button onClick={() => handleDeleteJob(editingJob.id)} className="px-4 py-2 text-sm font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-900/30 rounded-lg transition-colors flex items-center gap-2">
-                  <Trash2 className="w-4 h-4" /> Delete Job
-                </button>
-              ) : <div></div>}
+            <div className="p-5 bg-neutral-50 dark:bg-neutral-800/50 border-t border-neutral-100 dark:border-neutral-800 flex items-center justify-between gap-3 shrink-0">
+              {editingJob.id ? <button onClick={() => handleDeleteJob(editingJob.id)} className="px-3 py-1.5 text-sm font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-900/30 rounded-lg flex items-center gap-1.5 transition-colors"><Trash2 className="w-4 h-4" /> Delete</button> : <div />}
               <div className="flex gap-2">
-                <button onClick={() => setIsJobModalOpen(false)} className="px-4 py-2 text-sm font-medium text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg transition-colors">
-                  Cancel
-                </button>
-                <button onClick={handleSaveJob} disabled={!editingJob.title} className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors shadow-sm">
-                  Save Job
-                </button>
+                <button onClick={() => setIsJobModalOpen(false)} className="px-3 py-1.5 text-sm font-medium text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded-lg transition-colors">Cancel</button>
+                <button onClick={handleSaveJob} disabled={!editingJob.title} className="px-4 py-1.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg shadow-sm transition-colors">Save</button>
               </div>
             </div>
           </div>
@@ -1385,4 +761,3 @@ export default function App() {
     </div>
   );
 }
-
