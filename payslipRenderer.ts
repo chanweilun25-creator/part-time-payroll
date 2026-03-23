@@ -76,38 +76,36 @@ function getPayPeriodLabel(job: Job, selectedMonth: string, scope: CycleScope): 
   return `${format(cycleStart, 'd MMM yyyy')} – ${format(cycleEnd, 'd MMM yyyy')}`;
 }
 
-function $ (n: number) { return `$${n.toFixed(2)}`; }
-function h (n: number) { return `${n.toFixed(2)}h`; }
+const fmt$ = (n: number) => `$${n.toFixed(2)}`;
+const fmtH = (n: number) => `${n.toFixed(2)}h`;
 
 // ── Main renderer ─────────────────────────────────────────────────────────────
 
 export function renderPayslipHTML(opts: RenderOptions): string {
   const { jobs, shifts, ageGroup, selectedMonth, scope } = opts;
   const [year, month] = selectedMonth.split('-').map(Number);
-  const monthLabel    = format(new Date(year, month - 1, 1), 'MMMM yyyy');
-  const generatedAt   = format(new Date(), "d MMM yyyy 'at' h:mm a");
-  const cpfRates      = CPF_RATES[ageGroup];
+  const monthLabel  = format(new Date(year, month - 1, 1), 'MMMM yyyy');
+  const generatedAt = format(new Date(), "d MMM yyyy 'at' h:mm a");
+  const cpfRates    = CPF_RATES[ageGroup];
 
-  // ── Per-job computation ──
+  // ── Per-job computation ──────────────────────────────────────────────────────
   const jobData = jobs.map(job => {
     const jobShifts = getJobShifts(shifts, job, selectedMonth, scope)
       .sort((a, b) => a.date.localeCompare(b.date));
 
-    let totalLogged  = 0;
-    let totalPaid    = 0;
-    let totalGross   = 0;
+    let totalLogged = 0, totalPaid = 0, totalGross = 0;
     let weekdayHours = 0, weekendHours = 0, phHours = 0;
     let weekdayEarnings = 0, weekendEarnings = 0, phEarnings = 0;
     let totalAllowance = 0, totalDeduction = 0;
 
     jobShifts.forEach(shift => {
-      const date    = parseISO(shift.date);
-      const isPH    = shift.isPublicHoliday;
-      const isWkd   = !isPH && isWeekend(date);
-      const rate    = isPH ? job.rates.publicHoliday : isWkd ? job.rates.weekend : job.rates.weekday;
-      const logged  = calculateShiftHours(shift.startTime, shift.endTime, 0);
-      const paid    = calculateShiftHours(shift.startTime, shift.endTime, shift.unpaidBreakHours);
-      const gross   = calcShiftGross(shift, job);
+      const date   = parseISO(shift.date);
+      const isPH   = shift.isPublicHoliday;
+      const isWkd  = !isPH && isWeekend(date);
+      const rate   = isPH ? job.rates.publicHoliday : isWkd ? job.rates.weekend : job.rates.weekday;
+      const logged = calculateShiftHours(shift.startTime, shift.endTime, 0);
+      const paid   = calculateShiftHours(shift.startTime, shift.endTime, shift.unpaidBreakHours);
+      const gross  = calcShiftGross(shift, job);
 
       totalLogged    += logged;
       totalPaid      += paid;
@@ -115,16 +113,16 @@ export function renderPayslipHTML(opts: RenderOptions): string {
       totalAllowance += shift.allowance || 0;
       totalDeduction += shift.deduction || 0;
 
-      if (isPH)       { phHours += paid; phEarnings += paid * rate; }
-      else if (isWkd) { weekendHours += paid; weekendEarnings += paid * rate; }
-      else            { weekdayHours += paid; weekdayEarnings += paid * rate; }
+      if (isPH)       { phHours += paid;      phEarnings      += paid * rate; }
+      else if (isWkd) { weekendHours += paid;  weekendEarnings += paid * rate; }
+      else            { weekdayHours += paid;  weekdayEarnings += paid * rate; }
     });
 
     const { employeeCpf, employerCpf } = calculateCpf(totalGross, ageGroup);
-    const netPay = totalGross - employeeCpf;
+    const netPay          = totalGross - employeeCpf;
     const effectiveHourly = totalPaid > 0 ? netPay / totalPaid : 0;
-    const payPeriod = getPayPeriodLabel(job, selectedMonth, scope);
-    const jobColor  = getHexColor(job.colorId);
+    const payPeriod       = getPayPeriodLabel(job, selectedMonth, scope);
+    const jobColor        = getHexColor(job.colorId);
 
     return {
       job, jobShifts, jobColor, payPeriod,
@@ -136,19 +134,27 @@ export function renderPayslipHTML(opts: RenderOptions): string {
     };
   });
 
-  // ── Grand totals ──
-  const grandGross   = jobData.reduce((s, d) => s + d.totalGross, 0);
-  const grandEmpCpf  = jobData.reduce((s, d) => s + d.employeeCpf, 0);
-  const grandEmprCpf = jobData.reduce((s, d) => s + d.employerCpf, 0);
-  const grandNet     = jobData.reduce((s, d) => s + d.netPay, 0);
-  const grandHours   = jobData.reduce((s, d) => s + d.totalPaid, 0);
+  // ── Grand totals ──────────────────────────────────────────────────────────────
+  const grandGross   = jobData.reduce((s, d) => s + d.totalGross,   0);
+  const grandEmpCpf  = jobData.reduce((s, d) => s + d.employeeCpf,  0);
+  const grandEmprCpf = jobData.reduce((s, d) => s + d.employerCpf,  0);
+  const grandNet     = jobData.reduce((s, d) => s + d.netPay,        0);
+  const grandHours   = jobData.reduce((s, d) => s + d.totalPaid,     0);
 
-  // ── Job sections HTML ──
+  // ── Job pills ─────────────────────────────────────────────────────────────────
+  const jobPills = jobs.map(j =>
+    `<span class="job-pill">
+      <span class="pill-dot" style="background:${getHexColor(j.colorId)}"></span>
+      ${j.title}
+    </span>`
+  ).join('');
+
+  // ── Per-job card HTML ─────────────────────────────────────────────────────────
   const jobSections = jobData.map(d => {
     const { job, jobShifts, jobColor } = d;
 
     // Shift rows
-    const shiftRows = jobShifts.map(shift => {
+    const shiftRows = jobShifts.map((shift, i) => {
       const date      = parseISO(shift.date);
       const isPH      = shift.isPublicHoliday;
       const isWkd     = !isPH && isWeekend(date);
@@ -158,95 +164,127 @@ export function renderPayslipHTML(opts: RenderOptions): string {
       const holiday   = SG_PUBLIC_HOLIDAYS[shift.date];
       const typeLabel = isPH ? `PH${holiday ? ` · ${holiday}` : ''}` : isWkd ? 'Weekend' : 'Weekday';
       const typeCls   = isPH ? 'badge-ph' : isWkd ? 'badge-wkd' : 'badge-wd';
-      const breakNote = shift.unpaidBreakHours > 0 ? `<span class="break-note">${shift.unpaidBreakHours}h break</span>` : '';
-      const noteLine  = shift.notes ? `<tr class="note-row"><td colspan="6"><span class="note-icon">↳</span>${shift.notes}</td></tr>` : '';
+      const rowBg     = i % 2 === 1 ? 'style="background:#fafafa"' : '';
+      const breakNote = shift.unpaidBreakHours > 0
+        ? `<span class="break-tag">${shift.unpaidBreakHours}h break</span>` : '';
+      const noteLine  = shift.notes
+        ? `<tr><td colspan="6" class="note-cell">↳ ${shift.notes}</td></tr>` : '';
 
       return `
-        <tr class="shift-row">
-          <td class="date-cell">
-            <span class="date-day">${format(date, 'EEE')}</span>
-            <span class="date-full">${format(date, 'd MMM')}</span>
+        <tr ${rowBg}>
+          <td class="td-date">
+            <span class="dow">${format(date, 'EEE')}</span>
+            <span class="ddate">${format(date, 'd MMM')}</span>
           </td>
-          <td class="time-cell">${shift.startTime}<span class="time-sep">–</span>${shift.endTime}${breakNote}</td>
-          <td class="num">${h(paid)}</td>
-          <td class="num rate-cell">$${rate.toFixed(2)}<span class="rate-unit">/h</span></td>
+          <td class="td-time">${shift.startTime}<span class="tsep">–</span>${shift.endTime}${breakNote}</td>
+          <td class="td-num">${fmtH(paid)}</td>
+          <td class="td-num td-rate">$${rate.toFixed(2)}<span class="per-h">/h</span></td>
           <td><span class="badge ${typeCls}">${typeLabel}</span></td>
-          <td class="num gross-cell">${$(gross)}</td>
+          <td class="td-num td-gross">${fmt$(gross)}</td>
         </tr>${noteLine}`;
     }).join('');
 
-    // Earnings breakdown lines
-    const breakdownLines = [
-      d.weekdayHours  > 0 ? `<div class="calc-line"><span class="calc-label">Weekday</span><span class="calc-equation">${h(d.weekdayHours)} × $${job.rates.weekday.toFixed(2)}</span><span class="calc-val">${$(d.weekdayEarnings)}</span></div>` : '',
-      d.weekendHours  > 0 ? `<div class="calc-line"><span class="calc-label">Weekend</span><span class="calc-equation">${h(d.weekendHours)} × $${job.rates.weekend.toFixed(2)}</span><span class="calc-val">${$(d.weekendEarnings)}</span></div>` : '',
-      d.phHours       > 0 ? `<div class="calc-line"><span class="calc-label">Public Holiday</span><span class="calc-equation">${h(d.phHours)} × $${job.rates.publicHoliday.toFixed(2)}</span><span class="calc-val">${$(d.phEarnings)}</span></div>` : '',
-      d.totalAllowance > 0 ? `<div class="calc-line"><span class="calc-label">Allowances</span><span class="calc-equation">—</span><span class="calc-val positive">+${$(d.totalAllowance)}</span></div>` : '',
-      d.totalDeduction > 0 ? `<div class="calc-line"><span class="calc-label">Deductions</span><span class="calc-equation">—</span><span class="calc-val negative">−${$(d.totalDeduction)}</span></div>` : '',
+    // Receipt-style earnings breakdown
+    const earningsLines = [
+      d.weekdayHours  > 0 ? `<div class="receipt-line">
+        <span class="r-label">Weekday</span>
+        <span class="r-eq">${fmtH(d.weekdayHours)} × $${job.rates.weekday.toFixed(2)}</span>
+        <span class="r-val">${fmt$(d.weekdayEarnings)}</span>
+      </div>` : '',
+      d.weekendHours  > 0 ? `<div class="receipt-line">
+        <span class="r-label">Weekend</span>
+        <span class="r-eq">${fmtH(d.weekendHours)} × $${job.rates.weekend.toFixed(2)}</span>
+        <span class="r-val">${fmt$(d.weekendEarnings)}</span>
+      </div>` : '',
+      d.phHours       > 0 ? `<div class="receipt-line">
+        <span class="r-label">Public Holiday</span>
+        <span class="r-eq">${fmtH(d.phHours)} × $${job.rates.publicHoliday.toFixed(2)}</span>
+        <span class="r-val">${fmt$(d.phEarnings)}</span>
+      </div>` : '',
+      d.totalAllowance > 0 ? `<div class="receipt-line">
+        <span class="r-label">Allowances</span>
+        <span class="r-eq">—</span>
+        <span class="r-val r-pos">+${fmt$(d.totalAllowance)}</span>
+      </div>` : '',
+      d.totalDeduction > 0 ? `<div class="receipt-line">
+        <span class="r-label">Deductions</span>
+        <span class="r-eq">—</span>
+        <span class="r-val r-neg">−${fmt$(d.totalDeduction)}</span>
+      </div>` : '',
     ].filter(Boolean).join('');
 
-    const hoursLine = d.totalLogged !== d.totalPaid
-      ? `<span class="hours-detail">${h(d.totalLogged)} logged · ${h(d.totalPaid)} paid · ${h(d.totalLogged - d.totalPaid)} unpaid breaks</span>`
-      : `<span class="hours-detail">${h(d.totalPaid)} paid</span>`;
+    const hasBreaks = d.totalLogged !== d.totalPaid;
 
     return `
-    <div class="job-card" style="--accent: ${jobColor}">
-      <!-- Job header -->
-      <div class="job-card-header">
-        <div class="job-name-row">
-          <span class="job-dot" style="background:${jobColor}"></span>
-          <h2 class="job-name">${job.title}</h2>
+    <div class="job-card" style="border-left-color: ${jobColor}">
+
+      <!-- Card header -->
+      <div class="card-header">
+        <div class="card-title-row">
+          <span class="card-dot" style="background:${jobColor}"></span>
+          <h2 class="card-title">${job.title}</h2>
         </div>
-        <div class="job-meta-row">
-          <span class="meta-tag period-tag">
-            <span class="meta-tag-label">Pay Period</span>
+        <div class="card-meta-row">
+          <span class="meta-chip">
+            <span class="chip-label">Pay Period</span>
             ${d.payPeriod}
           </span>
-          <span class="meta-tag">
-            <span class="meta-tag-label">Cycle</span>
-            ${job.payrollCycle.type === 'end_of_month' ? `Monthly · cutoff day ${job.payrollCycle.cutoffDay}` : 'Event-based'}
+          <span class="meta-chip">
+            <span class="chip-label">Cycle</span>
+            ${job.payrollCycle.type === 'end_of_month'
+              ? `Monthly · cutoff day ${job.payrollCycle.cutoffDay}`
+              : 'Event-based'}
           </span>
         </div>
       </div>
 
       <!-- Summary strip -->
       <div class="summary-strip">
-        <div class="summary-item">
-          <span class="summary-label">Shifts</span>
-          <span class="summary-value">${jobShifts.length}</span>
+        <div class="s-item">
+          <span class="s-label">Shifts Worked</span>
+          <span class="s-val">${jobShifts.length}</span>
         </div>
-        <div class="summary-divider"></div>
-        <div class="summary-item">
-          <span class="summary-label">Hours</span>
-          <span class="summary-value">${h(d.totalPaid)}</span>
+        <div class="s-divider"></div>
+        <div class="s-item">
+          <span class="s-label">Hours Paid</span>
+          <span class="s-val">${fmtH(d.totalPaid)}</span>
         </div>
-        <div class="summary-divider"></div>
-        <div class="summary-item">
-          <span class="summary-label">Gross</span>
-          <span class="summary-value">${$(d.totalGross)}</span>
+        ${hasBreaks ? `
+        <div class="s-divider"></div>
+        <div class="s-item">
+          <span class="s-label">Hours Logged</span>
+          <span class="s-val s-muted">${fmtH(d.totalLogged)}</span>
         </div>
-        <div class="summary-divider"></div>
-        <div class="summary-item">
-          <span class="summary-label">Effective $/h (net)</span>
-          <span class="summary-value eff-rate">$${d.effectiveHourly.toFixed(2)}</span>
+        <div class="s-divider"></div>
+        <div class="s-item">
+          <span class="s-label">Unpaid Breaks</span>
+          <span class="s-val s-muted">${fmtH(d.totalLogged - d.totalPaid)}</span>
+        </div>` : ''}
+        <div class="s-divider"></div>
+        <div class="s-item">
+          <span class="s-label">Gross Pay</span>
+          <span class="s-val">${fmt$(d.totalGross)}</span>
+        </div>
+        <div class="s-divider"></div>
+        <div class="s-item">
+          <span class="s-label">Effective $/h (net)</span>
+          <span class="s-val s-indigo">$${d.effectiveHourly.toFixed(2)}</span>
         </div>
       </div>
-
-      <!-- Hours note if breaks exist -->
-      ${d.totalLogged !== d.totalPaid ? `<div class="hours-note">${hoursLine}</div>` : ''}
 
       <!-- Shift table -->
       ${jobShifts.length === 0
         ? `<div class="no-shifts">No shifts recorded for this period.</div>`
-        : `<div class="shift-table-wrap">
+        : `<div class="table-wrap">
             <table class="shift-table">
               <thead>
                 <tr>
                   <th>Date</th>
                   <th>Time</th>
-                  <th class="num">Paid hrs</th>
-                  <th class="num">Rate</th>
+                  <th class="th-num">Paid hrs</th>
+                  <th class="th-num">Rate</th>
                   <th>Type</th>
-                  <th class="num">Gross</th>
+                  <th class="th-num">Gross</th>
                 </tr>
               </thead>
               <tbody>${shiftRows}</tbody>
@@ -254,82 +292,84 @@ export function renderPayslipHTML(opts: RenderOptions): string {
           </div>`
       }
 
-      <!-- Earnings + CPF -->
-      <div class="bottom-grid">
-        <!-- Earnings breakdown -->
-        <div class="breakdown-col">
-          <p class="col-heading">Earnings Breakdown</p>
-          <div class="calc-lines">
-            ${breakdownLines}
-          </div>
-          <div class="calc-total-line">
+      <!-- Earnings + CPF stacked -->
+      <div class="lower-section">
+
+        <!-- Earnings breakdown (receipt style) -->
+        <div class="earnings-block">
+          <p class="block-label">Earnings Breakdown</p>
+          <div class="receipt-lines">${earningsLines}</div>
+          <div class="receipt-total">
             <span>Gross Pay</span>
-            <span>${$(d.totalGross)}</span>
+            <span>${fmt$(d.totalGross)}</span>
           </div>
         </div>
 
-        <!-- CPF -->
-        <div class="cpf-col">
-          <p class="col-heading">CPF Contributions</p>
-          <div class="cpf-stack">
-            <div class="cpf-line cpf-gross">
-              <span>Gross Pay</span>
-              <span>${$(d.totalGross)}</span>
-            </div>
-            <div class="cpf-line cpf-emp">
-              <span>Employee CPF <span class="cpf-rate-badge">${(cpfRates.employee * 100).toFixed(1)}%</span></span>
-              <span class="neg">− ${$(d.employeeCpf)}</span>
-            </div>
-            <div class="cpf-line cpf-net">
-              <span>Take-Home</span>
-              <span class="take-home">${$(d.netPay)}</span>
-            </div>
-            <div class="cpf-employer-note">
-              <span class="empr-label">Employer CPF (${(cpfRates.employer * 100).toFixed(1)}%) →</span>
-              <span class="empr-val">+ ${$(d.employerCpf)} to your CPF account</span>
-            </div>
+        <div class="lower-divider"></div>
+
+        <!-- CPF block -->
+        <div class="cpf-block">
+          <p class="block-label">CPF Contributions</p>
+          <div class="cpf-row">
+            <span class="cpf-label">Gross Pay</span>
+            <span class="cpf-num">${fmt$(d.totalGross)}</span>
+          </div>
+          <div class="cpf-row cpf-deduct">
+            <span class="cpf-label">
+              Employee CPF
+              <span class="cpf-rate-tag">${(cpfRates.employee * 100).toFixed(1)}%</span>
+            </span>
+            <span class="cpf-num cpf-red">− ${fmt$(d.employeeCpf)}</span>
+          </div>
+          <div class="cpf-separator"></div>
+          <div class="cpf-row cpf-net-row">
+            <span class="cpf-net-label">Take-Home</span>
+            <span class="cpf-take-home">${fmt$(d.netPay)}</span>
+          </div>
+          <div class="cpf-employer-row">
+            <span class="empr-text">
+              Employer also contributes ${fmt$(d.employerCpf)}
+              (${(cpfRates.employer * 100).toFixed(1)}%) to your CPF account
+            </span>
           </div>
         </div>
+
       </div>
     </div>`;
   }).join('');
 
-  // ── Grand total section ──
+  // ── Grand total card ──────────────────────────────────────────────────────────
   const grandSection = jobs.length > 1 ? `
     <div class="grand-card">
-      <div class="grand-header">
-        <span class="grand-label">Combined Summary</span>
+      <div class="grand-header-row">
+        <span class="grand-eyebrow">Combined Summary</span>
         <span class="grand-month">${monthLabel}</span>
       </div>
       <div class="grand-grid">
         <div class="grand-item">
-          <span class="grand-item-label">Total Hours</span>
-          <span class="grand-item-val">${h(grandHours)}</span>
+          <span class="gi-label">Total Hours</span>
+          <span class="gi-val">${fmtH(grandHours)}</span>
         </div>
         <div class="grand-item">
-          <span class="grand-item-label">Total Gross</span>
-          <span class="grand-item-val">${$(grandGross)}</span>
+          <span class="gi-label">Total Gross</span>
+          <span class="gi-val">${fmt$(grandGross)}</span>
         </div>
         <div class="grand-item">
-          <span class="grand-item-label">Employee CPF</span>
-          <span class="grand-item-val neg-light">− ${$(grandEmpCpf)}</span>
+          <span class="gi-label">Employee CPF</span>
+          <span class="gi-val gi-red">− ${fmt$(grandEmpCpf)}</span>
         </div>
         <div class="grand-item">
-          <span class="grand-item-label">Employer CPF</span>
-          <span class="grand-item-val indigo-light">+ ${$(grandEmprCpf)}</span>
+          <span class="gi-label">Employer CPF</span>
+          <span class="gi-val gi-indigo">+ ${fmt$(grandEmprCpf)}</span>
         </div>
-        <div class="grand-item grand-net-item">
-          <span class="grand-item-label">Total Take-Home</span>
-          <span class="grand-item-val grand-net">${$(grandNet)}</span>
+        <div class="grand-item grand-item-net">
+          <span class="gi-label">Total Take-Home</span>
+          <span class="gi-val gi-green">${fmt$(grandNet)}</span>
         </div>
       </div>
     </div>` : '';
 
-  // ── Job pills for header ──
-  const jobPills = jobs.map(j =>
-    `<span class="job-pill"><span class="pill-dot" style="background:${getHexColor(j.colorId)}"></span>${j.title}</span>`
-  ).join('');
-
+  // ── Full HTML document ────────────────────────────────────────────────────────
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -338,128 +378,110 @@ export function renderPayslipHTML(opts: RenderOptions): string {
   <title>Payslip — ${monthLabel}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
   <style>
-    :root {
-      --green:  #16a34a;
-      --red:    #dc2626;
-      --indigo: #6366f1;
-      --ink:    #0d0d14;
-      --ink2:   #374151;
-      --ink3:   #6b7280;
-      --ink4:   #9ca3af;
-      --line:   #e5e7eb;
-      --line2:  #f3f4f6;
-      --bg:     #f9fafb;
-      --white:  #ffffff;
-      --mono:   'DM Mono', monospace;
-    }
-
+    /* ── Reset ── */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
-      font-family: 'DM Sans', -apple-system, sans-serif;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
       font-size: 11px;
       line-height: 1.55;
-      color: var(--ink2);
-      background: var(--bg);
+      color: #1a1a1a;
+      background: #fafafa;
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
     }
 
+    /* ── Page ── */
     .page {
-      max-width: 820px;
+      max-width: 780px;
       margin: 0 auto;
-      padding: 52px 48px 72px;
+      padding: 56px 48px 80px;
     }
 
-    /* ── TOP HEADER ─────────────────────────────────────── */
-    .top-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      margin-bottom: 36px;
-      padding-bottom: 28px;
-      border-bottom: 1.5px solid var(--line);
+    /* ── Header ──────────────────────────────────────────── */
+    .doc-header {
+      margin-bottom: 40px;
+      padding-bottom: 32px;
+      border-bottom: 1px solid #ebebeb;
     }
 
-    .header-left {}
-
-    .payslip-label {
-      font-size: 9.5px;
+    .doc-eyebrow {
+      font-size: 10px;
       font-weight: 600;
       letter-spacing: 0.14em;
       text-transform: uppercase;
-      color: var(--indigo);
-      margin-bottom: 8px;
+      color: #6366f1;
+      margin-bottom: 10px;
     }
 
-    .month-title {
-      font-size: 34px;
+    .doc-month {
+      font-size: 32px;
       font-weight: 700;
-      color: var(--ink);
-      letter-spacing: -0.03em;
-      line-height: 1;
-      margin-bottom: 4px;
+      color: #0a0a0a;
+      letter-spacing: -0.025em;
+      line-height: 1.1;
+      margin-bottom: 20px;
     }
 
-    .header-sub {
-      font-size: 12px;
-      color: var(--ink4);
-      font-weight: 400;
-    }
-
-    .header-right {
-      text-align: right;
-      padding-top: 4px;
-    }
-
-    .header-meta-row {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      text-align: right;
-    }
-
-    .meta-line {
-      font-size: 10px;
-      color: var(--ink3);
-      line-height: 1.4;
-    }
-    .meta-line strong {
-      color: var(--ink2);
-      font-weight: 600;
-    }
-
-    /* ── JOB PILLS ──────────────────────────────────────── */
-    .jobs-row {
+    .doc-meta {
       display: flex;
       flex-wrap: wrap;
-      align-items: center;
-      gap: 8px;
+      gap: 20px;
+    }
+
+    .doc-meta-item {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+
+    .doc-meta-label {
+      font-size: 9px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #9ca3af;
+    }
+
+    .doc-meta-value {
+      font-size: 11px;
+      font-weight: 500;
+      color: #374151;
+    }
+
+    /* ── Job pills ───────────────────────────────────────── */
+    .pills-section {
       margin-bottom: 32px;
     }
 
-    .jobs-row-label {
+    .pills-label {
       font-size: 9px;
-      font-weight: 700;
-      letter-spacing: 0.12em;
+      font-weight: 600;
       text-transform: uppercase;
-      color: var(--ink4);
-      margin-right: 4px;
+      letter-spacing: 0.1em;
+      color: #9ca3af;
+      margin-bottom: 10px;
+    }
+
+    .pills-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
     }
 
     .job-pill {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
-      padding: 4px 12px 4px 8px;
-      background: var(--white);
-      border: 1px solid var(--line);
+      gap: 7px;
+      padding: 5px 12px 5px 9px;
+      background: #ffffff;
+      border: 1px solid #ebebeb;
       border-radius: 100px;
-      font-size: 10.5px;
+      font-size: 11px;
       font-weight: 500;
-      color: var(--ink2);
+      color: #374151;
     }
 
     .pill-dot {
@@ -469,128 +491,117 @@ export function renderPayslipHTML(opts: RenderOptions): string {
       flex-shrink: 0;
     }
 
-    /* ── JOB CARD ───────────────────────────────────────── */
+    /* ── Job card ────────────────────────────────────────── */
     .job-card {
-      background: var(--white);
-      border: 1px solid var(--line);
-      border-radius: 16px;
+      background: #ffffff;
+      border: 1px solid #ebebeb;
+      border-radius: 12px;
+      border-left-width: 3px;
       overflow: hidden;
-      margin-bottom: 24px;
+      margin-bottom: 20px;
       page-break-inside: avoid;
-      border-left: 3.5px solid var(--accent);
     }
 
-    .job-card-header {
+    /* Card header */
+    .card-header {
       padding: 20px 24px 16px;
-      border-bottom: 1px solid var(--line2);
+      border-bottom: 1px solid #f3f4f6;
     }
 
-    .job-name-row {
+    .card-title-row {
       display: flex;
       align-items: center;
       gap: 10px;
       margin-bottom: 10px;
     }
 
-    .job-dot {
+    .card-dot {
       width: 10px;
       height: 10px;
       border-radius: 50%;
       flex-shrink: 0;
     }
 
-    .job-name {
-      font-size: 17px;
+    .card-title {
+      font-size: 16px;
       font-weight: 700;
-      color: var(--ink);
-      letter-spacing: -0.02em;
+      color: #0a0a0a;
+      letter-spacing: -0.015em;
     }
 
-    .job-meta-row {
+    .card-meta-row {
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
     }
 
-    .meta-tag {
+    .meta-chip {
       display: inline-flex;
       align-items: center;
-      gap: 5px;
+      gap: 6px;
       padding: 3px 10px;
-      background: var(--line2);
+      background: #f9fafb;
+      border: 1px solid #ebebeb;
       border-radius: 6px;
       font-size: 10px;
-      color: var(--ink2);
-      font-weight: 500;
+      color: #374151;
+      font-weight: 400;
     }
 
-    .meta-tag-label {
+    .chip-label {
       font-size: 9px;
       font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.08em;
-      color: var(--ink4);
+      color: #9ca3af;
     }
 
-    /* ── SUMMARY STRIP ──────────────────────────────────── */
+    /* Summary strip */
     .summary-strip {
       display: flex;
       align-items: center;
       padding: 14px 24px;
-      border-bottom: 1px solid var(--line2);
+      border-bottom: 1px solid #f3f4f6;
+      background: #fafafa;
       gap: 0;
     }
 
-    .summary-item {
+    .s-item {
       flex: 1;
       display: flex;
       flex-direction: column;
-      gap: 2px;
+      gap: 3px;
     }
 
-    .summary-label {
+    .s-label {
       font-size: 9px;
-      font-weight: 700;
+      font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.1em;
-      color: var(--ink4);
+      color: #9ca3af;
     }
 
-    .summary-value {
-      font-size: 15px;
+    .s-val {
+      font-size: 14px;
       font-weight: 700;
-      color: var(--ink);
+      color: #0a0a0a;
       font-variant-numeric: tabular-nums;
-      font-family: var(--mono);
     }
 
-    .eff-rate { color: var(--indigo); }
+    .s-muted { color: #6b7280; font-weight: 500; }
+    .s-indigo { color: #6366f1; }
 
-    .summary-divider {
+    .s-divider {
       width: 1px;
-      height: 36px;
-      background: var(--line);
-      margin: 0 20px;
+      height: 32px;
+      background: #ebebeb;
+      margin: 0 16px;
       flex-shrink: 0;
     }
 
-    /* ── HOURS NOTE ─────────────────────────────────────── */
-    .hours-note {
-      padding: 8px 24px;
-      background: #fffbeb;
-      border-bottom: 1px solid #fde68a;
-    }
-
-    .hours-detail {
-      font-size: 10px;
-      color: #92400e;
-      font-weight: 500;
-    }
-
-    /* ── SHIFT TABLE ────────────────────────────────────── */
-    .shift-table-wrap {
-      padding: 0 24px;
-      border-bottom: 1px solid var(--line2);
+    /* Shift table */
+    .table-wrap {
+      border-bottom: 1px solid #f3f4f6;
     }
 
     .shift-table {
@@ -599,376 +610,346 @@ export function renderPayslipHTML(opts: RenderOptions): string {
     }
 
     .shift-table thead tr {
-      border-bottom: 1px solid var(--line);
+      border-bottom: 1px solid #ebebeb;
     }
 
     .shift-table th {
-      padding: 10px 8px 8px;
+      padding: 10px 12px 8px;
       font-size: 9px;
-      font-weight: 700;
-      letter-spacing: 0.1em;
+      font-weight: 600;
       text-transform: uppercase;
-      color: var(--ink4);
+      letter-spacing: 0.1em;
+      color: #9ca3af;
       text-align: left;
     }
 
-    .shift-table th.num { text-align: right; }
+    .th-num { text-align: right; }
 
-    .shift-row td {
-      padding: 9px 8px;
-      border-bottom: 1px solid var(--line2);
-      vertical-align: middle;
+    .shift-table tbody tr td {
+      padding: 9px 12px;
+      border-bottom: 1px solid #f3f4f6;
+      color: #374151;
     }
 
-    .shift-row:last-of-type td { border-bottom: none; }
-    .shift-row:hover td { background: #fafbff; }
+    .shift-table tbody tr:last-child td { border-bottom: none; }
 
-    .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .td-num { text-align: right; font-variant-numeric: tabular-nums; }
 
-    .date-cell {
-      white-space: nowrap;
-    }
-
-    .date-day {
+    .td-date { white-space: nowrap; }
+    .dow {
       font-size: 9px;
       font-weight: 700;
       text-transform: uppercase;
-      color: var(--ink4);
-      margin-right: 5px;
       letter-spacing: 0.06em;
+      color: #9ca3af;
+      margin-right: 5px;
     }
-
-    .date-full {
+    .ddate {
       font-size: 11px;
-      font-weight: 600;
-      color: var(--ink2);
+      font-weight: 500;
+      color: #374151;
     }
 
-    .time-cell {
-      font-family: var(--mono);
+    .td-time {
       font-size: 10.5px;
-      color: var(--ink2);
+      color: #4b5563;
+      font-variant-numeric: tabular-nums;
     }
+    .tsep { color: #d1d5db; margin: 0 2px; }
 
-    .time-sep { color: var(--ink4); margin: 0 2px; }
-
-    .break-note {
+    .break-tag {
       display: inline-block;
       margin-left: 6px;
-      font-size: 9px;
-      color: var(--ink4);
-      background: var(--line2);
       padding: 1px 6px;
+      background: #fef9c3;
+      color: #92400e;
       border-radius: 4px;
-      font-family: 'DM Sans', sans-serif;
-    }
-
-    .rate-cell {
-      font-family: var(--mono);
-      font-size: 10.5px;
-      color: var(--ink3);
-    }
-
-    .rate-unit {
       font-size: 9px;
-      color: var(--ink4);
+      font-weight: 500;
     }
 
-    .gross-cell {
-      font-family: var(--mono);
+    .td-rate {
+      font-size: 10.5px;
+      color: #6b7280;
+    }
+    .per-h { font-size: 9px; color: #9ca3af; }
+
+    .td-gross {
       font-weight: 600;
-      color: var(--ink);
+      color: #111827;
     }
 
-    /* ── BADGES ─────────────────────────────────────────── */
+    /* Badges */
     .badge {
       display: inline-block;
       padding: 2px 8px;
       border-radius: 5px;
       font-size: 9.5px;
       font-weight: 600;
-      letter-spacing: 0.03em;
     }
-
     .badge-wd  { background: #f3f4f6; color: #6b7280; }
     .badge-wkd { background: #fff3e0; color: #c2410c; }
     .badge-ph  { background: #fef9c3; color: #a16207; }
 
-    /* ── NOTE ROW ───────────────────────────────────────── */
-    .note-row td {
-      padding: 0 8px 8px 8px;
-      font-size: 10px;
-      color: var(--ink4);
+    /* Note row */
+    .note-cell {
+      padding: 2px 12px 8px 12px !important;
+      font-size: 9.5px;
+      color: #9ca3af;
       font-style: italic;
-      border-bottom: 1px solid var(--line2);
-    }
-
-    .note-icon {
-      margin-right: 5px;
-      font-style: normal;
-      color: var(--ink4);
+      border-bottom: 1px solid #f3f4f6 !important;
     }
 
     .no-shifts {
       padding: 20px 24px;
       font-size: 11px;
-      color: var(--ink4);
+      color: #9ca3af;
       font-style: italic;
-      border-bottom: 1px solid var(--line2);
+      border-bottom: 1px solid #f3f4f6;
     }
 
-    /* ── BOTTOM GRID ────────────────────────────────────── */
-    .bottom-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 0;
+    /* Lower section */
+    .lower-section {
+      display: flex;
+      flex-direction: column;
     }
 
-    .breakdown-col {
+    .earnings-block {
       padding: 20px 24px;
-      border-right: 1px solid var(--line2);
+      border-bottom: 1px solid #f3f4f6;
     }
 
-    .cpf-col {
+    .lower-divider { display: none; }
+
+    .cpf-block {
       padding: 20px 24px;
     }
 
-    .col-heading {
+    .block-label {
       font-size: 9px;
-      font-weight: 700;
+      font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.12em;
-      color: var(--ink4);
+      color: #9ca3af;
       margin-bottom: 14px;
     }
 
-    /* Calc lines */
-    .calc-lines {
+    /* Receipt lines */
+    .receipt-lines {
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 7px;
       margin-bottom: 12px;
     }
 
-    .calc-line {
+    .receipt-line {
       display: flex;
-      align-items: center;
+      align-items: baseline;
       gap: 0;
-      font-size: 10.5px;
+      font-size: 11px;
     }
 
-    .calc-label {
-      color: var(--ink3);
-      flex: 0 0 100px;
+    .r-label {
+      flex: 0 0 110px;
+      color: #4b5563;
+      font-weight: 500;
     }
 
-    .calc-equation {
-      color: var(--ink4);
-      font-family: var(--mono);
-      font-size: 10px;
+    .r-eq {
       flex: 1;
+      color: #9ca3af;
+      font-size: 10px;
+      font-variant-numeric: tabular-nums;
     }
 
-    .calc-val {
-      font-family: var(--mono);
+    .r-val {
       font-weight: 600;
-      color: var(--ink2);
+      color: #111827;
+      font-variant-numeric: tabular-nums;
+      min-width: 70px;
       text-align: right;
-      min-width: 72px;
     }
 
-    .calc-val.positive { color: var(--green); }
-    .calc-val.negative { color: var(--red); }
+    .r-pos { color: #16a34a; }
+    .r-neg { color: #dc2626; }
 
-    .calc-total-line {
+    .receipt-total {
       display: flex;
       justify-content: space-between;
       align-items: center;
       padding-top: 10px;
-      border-top: 1.5px solid var(--line);
+      border-top: 1.5px solid #ebebeb;
+      font-size: 12px;
       font-weight: 700;
-      font-size: 11px;
-      color: var(--ink);
-      font-family: var(--mono);
+      color: #0a0a0a;
+      font-variant-numeric: tabular-nums;
     }
 
-    /* CPF stack */
-    .cpf-stack {
-      display: flex;
-      flex-direction: column;
-      gap: 0;
-    }
-
-    .cpf-line {
+    /* CPF block */
+    .cpf-row {
       display: flex;
       justify-content: space-between;
       align-items: center;
       padding: 7px 0;
-      font-size: 10.5px;
-      border-bottom: 1px solid var(--line2);
+      border-bottom: 1px solid #f3f4f6;
+      font-size: 11px;
     }
 
-    .cpf-line:last-of-type { border-bottom: none; }
+    .cpf-row:last-of-type { border-bottom: none; }
 
-    .cpf-gross { color: var(--ink2); }
-    .cpf-emp   { color: var(--ink3); }
+    .cpf-label { color: #4b5563; }
+    .cpf-num { font-weight: 600; font-variant-numeric: tabular-nums; color: #111827; }
+    .cpf-red { color: #dc2626; }
 
-    .cpf-net {
-      padding: 10px 0 8px;
-      border-bottom: none;
-    }
-
-    .cpf-net span:first-child {
-      font-size: 12px;
+    .cpf-rate-tag {
+      display: inline-block;
+      margin-left: 5px;
+      padding: 1px 5px;
+      background: #fee2e2;
+      color: #991b1b;
+      border-radius: 4px;
+      font-size: 9px;
       font-weight: 700;
-      color: var(--ink);
     }
 
-    .take-home {
-      font-size: 20px;
+    .cpf-separator {
+      border-top: 1.5px solid #ebebeb;
+      margin: 4px 0;
+    }
+
+    .cpf-net-row {
+      border-bottom: none !important;
+      padding-top: 10px;
+    }
+
+    .cpf-net-label {
+      font-size: 13px;
+      font-weight: 700;
+      color: #0a0a0a;
+    }
+
+    .cpf-take-home {
+      font-size: 26px;
       font-weight: 800;
-      color: var(--green);
-      font-family: var(--mono);
+      color: #16a34a;
+      font-variant-numeric: tabular-nums;
       letter-spacing: -0.02em;
     }
 
-    .neg { color: var(--red); font-family: var(--mono); font-weight: 600; }
-
-    .cpf-rate-badge {
-      display: inline-block;
-      background: #fee2e2;
-      color: #991b1b;
-      font-size: 9px;
-      font-weight: 700;
-      padding: 1px 5px;
-      border-radius: 4px;
-      margin-left: 4px;
-    }
-
-    .cpf-employer-note {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-top: 10px;
-      padding: 8px 10px;
+    .cpf-employer-row {
+      margin-top: 12px;
+      padding: 10px 14px;
       background: #eef2ff;
       border-radius: 8px;
       border: 1px solid #c7d2fe;
     }
 
-    .empr-label {
-      font-size: 9.5px;
-      font-weight: 600;
-      color: #4338ca;
-    }
-
-    .empr-val {
+    .empr-text {
       font-size: 10px;
-      font-weight: 700;
       color: #4338ca;
-      font-family: var(--mono);
+      font-weight: 500;
     }
 
-    /* ── GRAND TOTAL ────────────────────────────────────── */
+    /* ── Grand total card ────────────────────────────────── */
     .grand-card {
-      background: var(--ink);
-      border-radius: 16px;
+      background: #0a0a0a;
+      border-radius: 12px;
       padding: 28px 32px;
       margin-bottom: 24px;
       page-break-inside: avoid;
     }
 
-    .grand-header {
+    .grand-header-row {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin-bottom: 22px;
+      margin-bottom: 24px;
     }
 
-    .grand-label {
-      font-size: 9.5px;
+    .grand-eyebrow {
+      font-size: 9px;
       font-weight: 700;
-      letter-spacing: 0.14em;
       text-transform: uppercase;
+      letter-spacing: 0.14em;
       color: #6b7280;
     }
 
     .grand-month {
       font-size: 11px;
-      font-weight: 600;
-      color: #9ca3af;
+      font-weight: 500;
+      color: #6b7280;
     }
 
     .grand-grid {
       display: grid;
       grid-template-columns: repeat(5, 1fr);
-      gap: 16px;
+      gap: 20px;
     }
 
     .grand-item {
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 8px;
     }
 
-    .grand-item-label {
+    .gi-label {
       font-size: 9px;
-      font-weight: 700;
+      font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.1em;
       color: #6b7280;
     }
 
-    .grand-item-val {
-      font-size: 16px;
-      font-weight: 800;
+    .gi-val {
+      font-size: 15px;
+      font-weight: 700;
       color: #f9fafb;
-      font-family: var(--mono);
-      letter-spacing: -0.01em;
+      font-variant-numeric: tabular-nums;
     }
 
-    .neg-light   { color: #fca5a5; }
-    .indigo-light { color: #a5b4fc; }
-    .grand-net   { color: #6ee7b7; font-size: 20px; }
+    .gi-red    { color: #fca5a5; }
+    .gi-indigo { color: #a5b4fc; }
+    .gi-green  { color: #6ee7b7; font-size: 20px; font-weight: 800; }
 
-    .grand-net-item {
-      padding-left: 16px;
+    .grand-item-net {
+      padding-left: 20px;
       border-left: 1px solid #374151;
     }
 
-    /* ── FOOTER ─────────────────────────────────────────── */
-    .footer {
+    /* ── Footer ──────────────────────────────────────────── */
+    .doc-footer {
+      margin-top: 40px;
+      padding-top: 20px;
+      border-top: 1px solid #ebebeb;
       display: flex;
       justify-content: space-between;
-      align-items: center;
-      padding-top: 20px;
-      border-top: 1px solid var(--line);
-      margin-top: 8px;
+      align-items: flex-start;
+      gap: 20px;
     }
 
-    .footer-left, .footer-right {
+    .footer-l, .footer-r {
       font-size: 9px;
       color: #d1d5db;
-      line-height: 1.5;
+      line-height: 1.6;
     }
 
-    .footer-right { text-align: right; }
+    .footer-r { text-align: right; }
 
-    /* ── PRINT ──────────────────────────────────────────── */
+    /* ── Print rules ─────────────────────────────────────── */
     @media print {
-      body { background: white; }
-      .page { padding: 32px 36px 48px; }
+      body { background: #fafafa; }
+      .page { padding: 32px 36px 52px; }
       .job-card, .grand-card { page-break-inside: avoid; }
 
       @page {
         size: A4;
         margin: 0.4in 0.5in;
 
-        @bottom-right {
+        @bottom-center {
           content: "Page " counter(page) " of " counter(pages);
+          font-family: 'Inter', sans-serif;
           font-size: 8px;
           color: #9ca3af;
-          font-family: 'DM Sans', sans-serif;
         }
       }
     }
@@ -978,26 +959,33 @@ export function renderPayslipHTML(opts: RenderOptions): string {
   <div class="page">
 
     <!-- Header -->
-    <div class="top-header">
-      <div class="header-left">
-        <div class="payslip-label">Payslip</div>
-        <h1 class="month-title">${monthLabel}</h1>
-        <p class="header-sub">Singapore Part-Time Payroll</p>
-      </div>
-      <div class="header-right">
-        <div class="header-meta-row">
-          <div class="meta-line"><strong>Generated</strong> ${generatedAt}</div>
-          <div class="meta-line"><strong>CPF Age Group</strong> ${cpfRates.label}</div>
-          <div class="meta-line"><strong>Rates</strong> effective ${CPF_RATES_EFFECTIVE_DATE}</div>
-          <div class="meta-line"><strong>Scope</strong> ${scope === 'payroll_cycle' ? 'Payroll Cycle' : 'Calendar Month'}</div>
+    <div class="doc-header">
+      <div class="doc-eyebrow">Payslip</div>
+      <h1 class="doc-month">${monthLabel}</h1>
+      <div class="doc-meta">
+        <div class="doc-meta-item">
+          <span class="doc-meta-label">Generated</span>
+          <span class="doc-meta-value">${generatedAt}</span>
+        </div>
+        <div class="doc-meta-item">
+          <span class="doc-meta-label">CPF Age Group</span>
+          <span class="doc-meta-value">${cpfRates.label}</span>
+        </div>
+        <div class="doc-meta-item">
+          <span class="doc-meta-label">Rates Effective</span>
+          <span class="doc-meta-value">${CPF_RATES_EFFECTIVE_DATE}</span>
+        </div>
+        <div class="doc-meta-item">
+          <span class="doc-meta-label">Scope</span>
+          <span class="doc-meta-value">${scope === 'payroll_cycle' ? 'Payroll Cycle' : 'Calendar Month'}</span>
         </div>
       </div>
     </div>
 
     <!-- Job pills -->
-    <div class="jobs-row">
-      <span class="jobs-row-label">Jobs</span>
-      ${jobPills}
+    <div class="pills-section">
+      <div class="pills-label">Jobs Included</div>
+      <div class="pills-row">${jobPills}</div>
     </div>
 
     <!-- Job cards -->
@@ -1007,13 +995,9 @@ export function renderPayslipHTML(opts: RenderOptions): string {
     ${grandSection}
 
     <!-- Footer -->
-    <div class="footer">
-      <div class="footer-left">
-        Generated by SG Part-Time Payroll Calculator · ${generatedAt}
-      </div>
-      <div class="footer-right">
-        This is a self-generated record and not an official payslip issued by an employer.
-      </div>
+    <div class="doc-footer">
+      <div class="footer-l">Generated by SG Part-Time Payroll Calculator · ${generatedAt}</div>
+      <div class="footer-r">Self-generated record only. Not an official payslip issued by an employer.</div>
     </div>
 
   </div>
