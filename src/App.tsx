@@ -25,6 +25,7 @@ import {
 } from './types';
 import { calculateShiftHours, calcShiftGross, calcPayrollSummary, expandRecurringRule, hoursToGoal } from './utils';
 import OfferSimulator from './OfferSimulator';
+import PDFExportModal from './PDFExportModal';
 
 // ── Storage helper ──────────────────────────────────────────────────────────
 function loadLS<T>(key: string, fallback: T): T {
@@ -55,6 +56,7 @@ export default function App() {
   const [isDayPickerOpen, setIsDayPickerOpen]         = useState(false);
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
   const [isRecurringModalOpen, setIsRecurringModalOpen] = useState(false);
+  const [isPDFModalOpen, setIsPDFModalOpen]           = useState(false);
   const [copiedShift, setCopiedShift]                 = useState<Partial<Shift> | null>(null);
   const [editingJob, setEditingJob]                   = useState<Job | null>(null);
   const [tempShift, setTempShift]                     = useState<Partial<Shift>>({});
@@ -227,8 +229,7 @@ export default function App() {
           </div>
           <div className="pt-2 mt-1 border-t border-neutral-100 dark:border-neutral-700 space-y-0.5">
             <button onClick={exportToCSV} className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium text-emerald-700 hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-emerald-900/30 transition-colors"><Download className="w-4 h-4" /> Export CSV</button>
-            <button onClick={generatePDF} className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium text-rose-700 hover:bg-rose-50 dark:text-rose-300 dark:hover:bg-rose-900/30 transition-colors"><FileText className="w-4 h-4" /> Download PDF</button>
-          </div>
+            <button onClick={() => setIsPDFModalOpen(true)} className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium text-rose-700 hover:bg-rose-50 dark:text-rose-300 dark:hover:bg-rose-900/30 transition-colors"><FileText className="w-4 h-4" /> Download PDF</button>          </div>
         </nav>
 
         <div className="space-y-3">
@@ -763,6 +764,14 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+      {isPDFModalOpen && (
+        <PDFExportModal
+          jobs={jobs}
+          shifts={shifts}
+          ageGroup={ageGroup}
+          onClose={() => setIsPDFModalOpen(false)}
+        />
       )}
     </div>
   );
