@@ -1,17 +1,22 @@
-import { format, parseISO, startOfMonth, endOfMonth, isAfter, isBefore, isEqual, isWeekend } from 'date-fns';
+import {
+  format, parseISO, startOfMonth, endOfMonth,
+  isAfter, isBefore, isEqual, isWeekend,
+} from 'date-fns';
 import { type Job, type Shift, getHexColor, SG_PUBLIC_HOLIDAYS } from './types';
 import { type AgeGroup, CPF_RATES, CPF_RATES_EFFECTIVE_DATE, calculateCpf } from './cpfRates';
 import { calculateShiftHours, calcShiftGross } from './utils';
 
-type CycleScope = 'payroll_cycle' | 'calendar_month';
+export type CycleScope = 'payroll_cycle' | 'calendar_month';
 
-interface RenderOptions {
+export interface RenderOptions {
   jobs: Job[];
   shifts: Shift[];
   ageGroup: AgeGroup;
   selectedMonth: string; // 'yyyy-MM'
   scope: CycleScope;
 }
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function getJobShifts(shifts: Shift[], job: Job, selectedMonth: string, scope: CycleScope): Shift[] {
   const [year, month] = selectedMonth.split('-').map(Number);
@@ -49,599 +54,923 @@ function getJobShifts(shifts: Shift[], job: Job, selectedMonth: string, scope: C
   });
 }
 
-function hex(colorId: string) { return getHexColor(colorId); }
-function fmtMoney(n: number)  { return `$${n.toFixed(2)}`; }
-function fmtHours(n: number)  { return `${n.toFixed(2)}h`; }
+function getPayPeriodLabel(job: Job, selectedMonth: string, scope: CycleScope): string {
+  const [year, month] = selectedMonth.split('-').map(Number);
+  const refDate = new Date(year, month - 1, 1);
+
+  if (scope === 'calendar_month') {
+    return `${format(startOfMonth(refDate), 'd MMM yyyy')} – ${format(endOfMonth(refDate), 'd MMM yyyy')}`;
+  }
+  if (job.payrollCycle.type === 'end_of_event') {
+    const end = job.payrollCycle.endDate
+      ? format(parseISO(job.payrollCycle.endDate), 'd MMM yyyy')
+      : 'ongoing';
+    return `Event-based · ends ${end}`;
+  }
+  const cutoffDay = job.payrollCycle.cutoffDay || 31;
+  if (cutoffDay >= 28) {
+    return `${format(startOfMonth(refDate), 'd MMM yyyy')} – ${format(endOfMonth(refDate), 'd MMM yyyy')}`;
+  }
+  const cycleEnd   = new Date(year, month - 1, cutoffDay);
+  const cycleStart = new Date(year, month - 2, cutoffDay + 1);
+  return `${format(cycleStart, 'd MMM yyyy')} – ${format(cycleEnd, 'd MMM yyyy')}`;
+}
+
+function $ (n: number) { return `$${n.toFixed(2)}`; }
+function h (n: number) { return `${n.toFixed(2)}h`; }
+
+// ── Main renderer ─────────────────────────────────────────────────────────────
 
 export function renderPayslipHTML(opts: RenderOptions): string {
   const { jobs, shifts, ageGroup, selectedMonth, scope } = opts;
   const [year, month] = selectedMonth.split('-').map(Number);
   const monthLabel    = format(new Date(year, month - 1, 1), 'MMMM yyyy');
-  const generatedAt   = format(new Date(), "d MMM yyyy, h:mm a");
+  const generatedAt   = format(new Date(), "d MMM yyyy 'at' h:mm a");
   const cpfRates      = CPF_RATES[ageGroup];
-  const scopeLabel    = scope === 'payroll_cycle' ? 'Payroll Cycle' : 'Calendar Month';
 
-  // Per-job data
-  const jobBlocks = jobs.map(job => {
-    const jobShifts  = getJobShifts(shifts, job, selectedMonth, scope).sort((a, b) => a.date.localeCompare(b.date));
-    let totalHours   = 0;
+  // ── Per-job computation ──
+  const jobData = jobs.map(job => {
+    const jobShifts = getJobShifts(shifts, job, selectedMonth, scope)
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    let totalLogged  = 0;
+    let totalPaid    = 0;
     let totalGross   = 0;
     let weekdayHours = 0, weekendHours = 0, phHours = 0;
-    let weekdayGross = 0, weekendGross = 0, phGross = 0;
+    let weekdayEarnings = 0, weekendEarnings = 0, phEarnings = 0;
     let totalAllowance = 0, totalDeduction = 0;
 
-    const shiftRows = jobShifts.map(shift => {
-      const date  = parseISO(shift.date);
-      const isPH  = shift.isPublicHoliday;
-      const isWkd = !isPH && isWeekend(date);
-      const rate  = isPH ? job.rates.publicHoliday : isWkd ? job.rates.weekend : job.rates.weekday;
-      const hours = calculateShiftHours(shift.startTime, shift.endTime, shift.unpaidBreakHours);
-      const gross = calcShiftGross(shift, job);
-      const holidayName = SG_PUBLIC_HOLIDAYS[shift.date];
+    jobShifts.forEach(shift => {
+      const date    = parseISO(shift.date);
+      const isPH    = shift.isPublicHoliday;
+      const isWkd   = !isPH && isWeekend(date);
+      const rate    = isPH ? job.rates.publicHoliday : isWkd ? job.rates.weekend : job.rates.weekday;
+      const logged  = calculateShiftHours(shift.startTime, shift.endTime, 0);
+      const paid    = calculateShiftHours(shift.startTime, shift.endTime, shift.unpaidBreakHours);
+      const gross   = calcShiftGross(shift, job);
 
-      totalHours   += hours;
-      totalGross   += gross;
+      totalLogged    += logged;
+      totalPaid      += paid;
+      totalGross     += gross;
       totalAllowance += shift.allowance || 0;
       totalDeduction += shift.deduction || 0;
 
-      if (isPH)        { phHours += hours; phGross += hours * rate; }
-      else if (isWkd)  { weekendHours += hours; weekendGross += hours * rate; }
-      else             { weekdayHours += hours; weekdayGross += hours * rate; }
-
-      const typeTag = isPH
-        ? `<span class="badge badge-ph">PH${holidayName ? ` · ${holidayName}` : ''}</span>`
-        : isWkd ? `<span class="badge badge-wkd">Weekend</span>`
-        : `<span class="badge badge-wd">Weekday</span>`;
-
-      return `
-        <tr>
-          <td>${format(date, 'EEE, d MMM')}</td>
-          <td>${shift.startTime} – ${shift.endTime}</td>
-          <td class="num">${fmtHours(hours)}</td>
-          <td class="num">$${rate.toFixed(2)}</td>
-          <td>${typeTag}</td>
-          <td class="num">${shift.allowance ? `+${fmtMoney(shift.allowance)}` : '—'}</td>
-          <td class="num">${shift.deduction ? `-${fmtMoney(shift.deduction)}` : '—'}</td>
-          <td class="num bold">${fmtMoney(gross)}</td>
-        </tr>
-        ${shift.notes ? `<tr class="notes-row"><td colspan="8"><span class="note-label">Note:</span> ${shift.notes}</td></tr>` : ''}
-      `;
-    }).join('');
+      if (isPH)       { phHours += paid; phEarnings += paid * rate; }
+      else if (isWkd) { weekendHours += paid; weekendEarnings += paid * rate; }
+      else            { weekdayHours += paid; weekdayEarnings += paid * rate; }
+    });
 
     const { employeeCpf, employerCpf } = calculateCpf(totalGross, ageGroup);
     const netPay = totalGross - employeeCpf;
-    const jobColor = hex(job.colorId);
+    const effectiveHourly = totalPaid > 0 ? netPay / totalPaid : 0;
+    const payPeriod = getPayPeriodLabel(job, selectedMonth, scope);
+    const jobColor  = getHexColor(job.colorId);
 
-    // Rate breakdown rows — only show rows with hours
-    const rateBreakdown = [
-      weekdayHours  > 0 ? `<tr><td>Weekday hours</td><td class="num">${fmtHours(weekdayHours)}</td><td class="num">$${job.rates.weekday.toFixed(2)}/h</td><td class="num">${fmtMoney(weekdayGross)}</td></tr>` : '',
-      weekendHours  > 0 ? `<tr><td>Weekend hours</td><td class="num">${fmtHours(weekendHours)}</td><td class="num">$${job.rates.weekend.toFixed(2)}/h</td><td class="num">${fmtMoney(weekendGross)}</td></tr>` : '',
-      phHours       > 0 ? `<tr><td>Public holiday hours</td><td class="num">${fmtHours(phHours)}</td><td class="num">$${job.rates.publicHoliday.toFixed(2)}/h</td><td class="num">${fmtMoney(phGross)}</td></tr>` : '',
-      totalAllowance > 0 ? `<tr><td>Allowances</td><td class="num">—</td><td class="num">—</td><td class="num">+${fmtMoney(totalAllowance)}</td></tr>` : '',
-      totalDeduction > 0 ? `<tr><td>Deductions</td><td class="num">—</td><td class="num">—</td><td class="num">-${fmtMoney(totalDeduction)}</td></tr>` : '',
-    ].filter(Boolean).join('');
-
-    const cycleNote = job.payrollCycle.type === 'end_of_month' && scope === 'payroll_cycle'
-      ? `Payroll cycle cutoff: Day ${job.payrollCycle.cutoffDay}`
-      : job.payrollCycle.type === 'end_of_event'
-      ? `Event-based job${job.payrollCycle.endDate ? ` · ends ${format(parseISO(job.payrollCycle.endDate), 'd MMM yyyy')}` : ''}`
-      : `Calendar month scope`;
-
-    return { job, jobShifts, shiftRows, rateBreakdown, totalHours, totalGross, totalAllowance, totalDeduction, employeeCpf, employerCpf, netPay, jobColor, cycleNote };
+    return {
+      job, jobShifts, jobColor, payPeriod,
+      totalLogged, totalPaid, totalGross,
+      weekdayHours, weekendHours, phHours,
+      weekdayEarnings, weekendEarnings, phEarnings,
+      totalAllowance, totalDeduction,
+      employeeCpf, employerCpf, netPay, effectiveHourly,
+    };
   });
 
-  // Grand total
-  const grandGross      = jobBlocks.reduce((s, b) => s + b.totalGross, 0);
-  const grandEmpCpf     = jobBlocks.reduce((s, b) => s + b.employeeCpf, 0);
-  const grandEmprCpf    = jobBlocks.reduce((s, b) => s + b.employerCpf, 0);
-  const grandNet        = jobBlocks.reduce((s, b) => s + b.netPay, 0);
-  const grandHours      = jobBlocks.reduce((s, b) => s + b.totalHours, 0);
+  // ── Grand totals ──
+  const grandGross   = jobData.reduce((s, d) => s + d.totalGross, 0);
+  const grandEmpCpf  = jobData.reduce((s, d) => s + d.employeeCpf, 0);
+  const grandEmprCpf = jobData.reduce((s, d) => s + d.employerCpf, 0);
+  const grandNet     = jobData.reduce((s, d) => s + d.netPay, 0);
+  const grandHours   = jobData.reduce((s, d) => s + d.totalPaid, 0);
 
-  const jobDotList = jobs.map(j =>
-    `<span class="job-dot-item"><span class="dot" style="background:${hex(j.colorId)}"></span>${j.title}</span>`
-  ).join('');
+  // ── Job sections HTML ──
+  const jobSections = jobData.map(d => {
+    const { job, jobShifts, jobColor } = d;
 
-  const jobSections = jobBlocks.map(b => `
-    <div class="job-section" style="--job-color: ${b.jobColor}">
-      <div class="job-header">
-        <div class="job-title-row">
-          <span class="job-dot" style="background:${b.jobColor}"></span>
-          <h2 class="job-title">${b.job.title}</h2>
-          <span class="job-cycle-note">${b.cycleNote}</span>
+    // Shift rows
+    const shiftRows = jobShifts.map(shift => {
+      const date      = parseISO(shift.date);
+      const isPH      = shift.isPublicHoliday;
+      const isWkd     = !isPH && isWeekend(date);
+      const rate      = isPH ? job.rates.publicHoliday : isWkd ? job.rates.weekend : job.rates.weekday;
+      const paid      = calculateShiftHours(shift.startTime, shift.endTime, shift.unpaidBreakHours);
+      const gross     = calcShiftGross(shift, job);
+      const holiday   = SG_PUBLIC_HOLIDAYS[shift.date];
+      const typeLabel = isPH ? `PH${holiday ? ` · ${holiday}` : ''}` : isWkd ? 'Weekend' : 'Weekday';
+      const typeCls   = isPH ? 'badge-ph' : isWkd ? 'badge-wkd' : 'badge-wd';
+      const breakNote = shift.unpaidBreakHours > 0 ? `<span class="break-note">${shift.unpaidBreakHours}h break</span>` : '';
+      const noteLine  = shift.notes ? `<tr class="note-row"><td colspan="6"><span class="note-icon">↳</span>${shift.notes}</td></tr>` : '';
+
+      return `
+        <tr class="shift-row">
+          <td class="date-cell">
+            <span class="date-day">${format(date, 'EEE')}</span>
+            <span class="date-full">${format(date, 'd MMM')}</span>
+          </td>
+          <td class="time-cell">${shift.startTime}<span class="time-sep">–</span>${shift.endTime}${breakNote}</td>
+          <td class="num">${h(paid)}</td>
+          <td class="num rate-cell">$${rate.toFixed(2)}<span class="rate-unit">/h</span></td>
+          <td><span class="badge ${typeCls}">${typeLabel}</span></td>
+          <td class="num gross-cell">${$(gross)}</td>
+        </tr>${noteLine}`;
+    }).join('');
+
+    // Earnings breakdown lines
+    const breakdownLines = [
+      d.weekdayHours  > 0 ? `<div class="calc-line"><span class="calc-label">Weekday</span><span class="calc-equation">${h(d.weekdayHours)} × $${job.rates.weekday.toFixed(2)}</span><span class="calc-val">${$(d.weekdayEarnings)}</span></div>` : '',
+      d.weekendHours  > 0 ? `<div class="calc-line"><span class="calc-label">Weekend</span><span class="calc-equation">${h(d.weekendHours)} × $${job.rates.weekend.toFixed(2)}</span><span class="calc-val">${$(d.weekendEarnings)}</span></div>` : '',
+      d.phHours       > 0 ? `<div class="calc-line"><span class="calc-label">Public Holiday</span><span class="calc-equation">${h(d.phHours)} × $${job.rates.publicHoliday.toFixed(2)}</span><span class="calc-val">${$(d.phEarnings)}</span></div>` : '',
+      d.totalAllowance > 0 ? `<div class="calc-line"><span class="calc-label">Allowances</span><span class="calc-equation">—</span><span class="calc-val positive">+${$(d.totalAllowance)}</span></div>` : '',
+      d.totalDeduction > 0 ? `<div class="calc-line"><span class="calc-label">Deductions</span><span class="calc-equation">—</span><span class="calc-val negative">−${$(d.totalDeduction)}</span></div>` : '',
+    ].filter(Boolean).join('');
+
+    const hoursLine = d.totalLogged !== d.totalPaid
+      ? `<span class="hours-detail">${h(d.totalLogged)} logged · ${h(d.totalPaid)} paid · ${h(d.totalLogged - d.totalPaid)} unpaid breaks</span>`
+      : `<span class="hours-detail">${h(d.totalPaid)} paid</span>`;
+
+    return `
+    <div class="job-card" style="--accent: ${jobColor}">
+      <!-- Job header -->
+      <div class="job-card-header">
+        <div class="job-name-row">
+          <span class="job-dot" style="background:${jobColor}"></span>
+          <h2 class="job-name">${job.title}</h2>
         </div>
-        <div class="job-summary-pills">
-          <span class="pill">${b.jobShifts.length} shift${b.jobShifts.length !== 1 ? 's' : ''}</span>
-          <span class="pill">${fmtHours(b.totalHours)} total</span>
-          <span class="pill gross-pill">${fmtMoney(b.totalGross)} gross</span>
+        <div class="job-meta-row">
+          <span class="meta-tag period-tag">
+            <span class="meta-tag-label">Pay Period</span>
+            ${d.payPeriod}
+          </span>
+          <span class="meta-tag">
+            <span class="meta-tag-label">Cycle</span>
+            ${job.payrollCycle.type === 'end_of_month' ? `Monthly · cutoff day ${job.payrollCycle.cutoffDay}` : 'Event-based'}
+          </span>
         </div>
       </div>
 
-      ${b.jobShifts.length === 0 ? '<p class="no-shifts">No shifts recorded for this period.</p>' : `
-        <table class="shift-table">
-          <thead>
-            <tr>
-              <th>Date</th><th>Hours</th><th>Paid Hrs</th><th>Rate</th><th>Type</th><th>Allowance</th><th>Deduction</th><th>Gross</th>
-            </tr>
-          </thead>
-          <tbody>${b.shiftRows}</tbody>
-        </table>
-      `}
-
-      <div class="calc-section">
-        <div class="calc-left">
-          <p class="calc-heading">Earnings Breakdown</p>
-          <table class="calc-table">
-            <thead><tr><th>Component</th><th>Hours</th><th>Rate</th><th>Amount</th></tr></thead>
-            <tbody>${b.rateBreakdown}</tbody>
-            <tfoot>
-              <tr class="total-row"><td colspan="3">Gross Pay</td><td class="num bold">${fmtMoney(b.totalGross)}</td></tr>
-            </tfoot>
-          </table>
+      <!-- Summary strip -->
+      <div class="summary-strip">
+        <div class="summary-item">
+          <span class="summary-label">Shifts</span>
+          <span class="summary-value">${jobShifts.length}</span>
         </div>
-        <div class="calc-right">
-          <p class="calc-heading">CPF Contributions</p>
-          <div class="cpf-box">
-            <div class="cpf-row">
+        <div class="summary-divider"></div>
+        <div class="summary-item">
+          <span class="summary-label">Hours</span>
+          <span class="summary-value">${h(d.totalPaid)}</span>
+        </div>
+        <div class="summary-divider"></div>
+        <div class="summary-item">
+          <span class="summary-label">Gross</span>
+          <span class="summary-value">${$(d.totalGross)}</span>
+        </div>
+        <div class="summary-divider"></div>
+        <div class="summary-item">
+          <span class="summary-label">Effective $/h (net)</span>
+          <span class="summary-value eff-rate">$${d.effectiveHourly.toFixed(2)}</span>
+        </div>
+      </div>
+
+      <!-- Hours note if breaks exist -->
+      ${d.totalLogged !== d.totalPaid ? `<div class="hours-note">${hoursLine}</div>` : ''}
+
+      <!-- Shift table -->
+      ${jobShifts.length === 0
+        ? `<div class="no-shifts">No shifts recorded for this period.</div>`
+        : `<div class="shift-table-wrap">
+            <table class="shift-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Time</th>
+                  <th class="num">Paid hrs</th>
+                  <th class="num">Rate</th>
+                  <th>Type</th>
+                  <th class="num">Gross</th>
+                </tr>
+              </thead>
+              <tbody>${shiftRows}</tbody>
+            </table>
+          </div>`
+      }
+
+      <!-- Earnings + CPF -->
+      <div class="bottom-grid">
+        <!-- Earnings breakdown -->
+        <div class="breakdown-col">
+          <p class="col-heading">Earnings Breakdown</p>
+          <div class="calc-lines">
+            ${breakdownLines}
+          </div>
+          <div class="calc-total-line">
+            <span>Gross Pay</span>
+            <span>${$(d.totalGross)}</span>
+          </div>
+        </div>
+
+        <!-- CPF -->
+        <div class="cpf-col">
+          <p class="col-heading">CPF Contributions</p>
+          <div class="cpf-stack">
+            <div class="cpf-line cpf-gross">
               <span>Gross Pay</span>
-              <span class="cpf-val">${fmtMoney(b.totalGross)}</span>
+              <span>${$(d.totalGross)}</span>
             </div>
-            <div class="cpf-row employee">
-              <span>Employee CPF (${(cpfRates.employee * 100).toFixed(1)}%)</span>
-              <span class="cpf-val negative">− ${fmtMoney(b.employeeCpf)}</span>
+            <div class="cpf-line cpf-emp">
+              <span>Employee CPF <span class="cpf-rate-badge">${(cpfRates.employee * 100).toFixed(1)}%</span></span>
+              <span class="neg">− ${$(d.employeeCpf)}</span>
             </div>
-            <div class="cpf-divider"></div>
-            <div class="cpf-row net">
-              <span>Take-Home (Net)</span>
-              <span class="cpf-val net-val">${fmtMoney(b.netPay)}</span>
+            <div class="cpf-line cpf-net">
+              <span>Take-Home</span>
+              <span class="take-home">${$(d.netPay)}</span>
             </div>
-            <div class="cpf-row employer">
-              <span>Employer CPF (${(cpfRates.employer * 100).toFixed(1)}%)</span>
-              <span class="cpf-val positive">+ ${fmtMoney(b.employerCpf)}</span>
+            <div class="cpf-employer-note">
+              <span class="empr-label">Employer CPF (${(cpfRates.employer * 100).toFixed(1)}%) →</span>
+              <span class="empr-val">+ ${$(d.employerCpf)} to your CPF account</span>
             </div>
-            <p class="cpf-note">Employer CPF goes into your CPF account and is not part of take-home pay.</p>
           </div>
         </div>
       </div>
-    </div>
-  `).join('');
+    </div>`;
+  }).join('');
 
-  const hasMultipleJobs = jobBlocks.length > 1;
-
-  const grandTotalSection = hasMultipleJobs ? `
-    <div class="grand-total-section">
-      <h2 class="grand-title">Combined Summary</h2>
+  // ── Grand total section ──
+  const grandSection = jobs.length > 1 ? `
+    <div class="grand-card">
+      <div class="grand-header">
+        <span class="grand-label">Combined Summary</span>
+        <span class="grand-month">${monthLabel}</span>
+      </div>
       <div class="grand-grid">
-        <div class="grand-card">
-          <p class="grand-label">Total Hours</p>
-          <p class="grand-value">${fmtHours(grandHours)}</p>
+        <div class="grand-item">
+          <span class="grand-item-label">Total Hours</span>
+          <span class="grand-item-val">${h(grandHours)}</span>
         </div>
-        <div class="grand-card">
-          <p class="grand-label">Total Gross</p>
-          <p class="grand-value">${fmtMoney(grandGross)}</p>
+        <div class="grand-item">
+          <span class="grand-item-label">Total Gross</span>
+          <span class="grand-item-val">${$(grandGross)}</span>
         </div>
-        <div class="grand-card negative-card">
-          <p class="grand-label">Total Employee CPF</p>
-          <p class="grand-value negative">${fmtMoney(grandEmpCpf)}</p>
+        <div class="grand-item">
+          <span class="grand-item-label">Employee CPF</span>
+          <span class="grand-item-val neg-light">− ${$(grandEmpCpf)}</span>
         </div>
-        <div class="grand-card positive-card">
-          <p class="grand-label">Total Employer CPF</p>
-          <p class="grand-value positive">${fmtMoney(grandEmprCpf)}</p>
+        <div class="grand-item">
+          <span class="grand-item-label">Employer CPF</span>
+          <span class="grand-item-val indigo-light">+ ${$(grandEmprCpf)}</span>
         </div>
-        <div class="grand-card net-card">
-          <p class="grand-label">Total Take-Home</p>
-          <p class="grand-value net">${fmtMoney(grandNet)}</p>
+        <div class="grand-item grand-net-item">
+          <span class="grand-item-label">Total Take-Home</span>
+          <span class="grand-item-val grand-net">${$(grandNet)}</span>
         </div>
       </div>
-    </div>
-  ` : '';
+    </div>` : '';
+
+  // ── Job pills for header ──
+  const jobPills = jobs.map(j =>
+    `<span class="job-pill"><span class="pill-dot" style="background:${getHexColor(j.colorId)}"></span>${j.title}</span>`
+  ).join('');
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Payslip — ${monthLabel}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <style>
-    /* ── Reset & base ── */
+    :root {
+      --green:  #16a34a;
+      --red:    #dc2626;
+      --indigo: #6366f1;
+      --ink:    #0d0d14;
+      --ink2:   #374151;
+      --ink3:   #6b7280;
+      --ink4:   #9ca3af;
+      --line:   #e5e7eb;
+      --line2:  #f3f4f6;
+      --bg:     #f9fafb;
+      --white:  #ffffff;
+      --mono:   'DM Mono', monospace;
+    }
+
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-family: 'DM Sans', -apple-system, sans-serif;
       font-size: 11px;
-      line-height: 1.5;
-      color: #1a1a2e;
-      background: #ffffff;
-      padding: 0;
+      line-height: 1.55;
+      color: var(--ink2);
+      background: var(--bg);
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
     }
 
-    /* ── Page layout ── */
     .page {
-      max-width: 900px;
+      max-width: 820px;
       margin: 0 auto;
-      padding: 48px 48px 64px;
+      padding: 52px 48px 72px;
     }
 
-    /* ── Header ── */
-    .header {
+    /* ── TOP HEADER ─────────────────────────────────────── */
+    .top-header {
       display: flex;
-      align-items: flex-start;
       justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 36px;
       padding-bottom: 28px;
-      border-bottom: 2px solid #e8e8f0;
+      border-bottom: 1.5px solid var(--line);
+    }
+
+    .header-left {}
+
+    .payslip-label {
+      font-size: 9.5px;
+      font-weight: 600;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--indigo);
+      margin-bottom: 8px;
+    }
+
+    .month-title {
+      font-size: 34px;
+      font-weight: 700;
+      color: var(--ink);
+      letter-spacing: -0.03em;
+      line-height: 1;
+      margin-bottom: 4px;
+    }
+
+    .header-sub {
+      font-size: 12px;
+      color: var(--ink4);
+      font-weight: 400;
+    }
+
+    .header-right {
+      text-align: right;
+      padding-top: 4px;
+    }
+
+    .header-meta-row {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      text-align: right;
+    }
+
+    .meta-line {
+      font-size: 10px;
+      color: var(--ink3);
+      line-height: 1.4;
+    }
+    .meta-line strong {
+      color: var(--ink2);
+      font-weight: 600;
+    }
+
+    /* ── JOB PILLS ──────────────────────────────────────── */
+    .jobs-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
       margin-bottom: 32px;
     }
-    .header-left {}
-    .header-badge {
-      display: inline-block;
-      background: #6366f1;
-      color: white;
+
+    .jobs-row-label {
       font-size: 9px;
       font-weight: 700;
       letter-spacing: 0.12em;
       text-transform: uppercase;
-      padding: 3px 10px;
-      border-radius: 100px;
-      margin-bottom: 10px;
-    }
-    .header-title {
-      font-size: 28px;
-      font-weight: 700;
-      color: #0f0f23;
-      letter-spacing: -0.02em;
-      line-height: 1.15;
-    }
-    .header-subtitle {
-      font-size: 13px;
-      color: #6b7280;
-      margin-top: 4px;
-    }
-    .header-right {
-      text-align: right;
-    }
-    .header-meta {
-      font-size: 10px;
-      color: #9ca3af;
-      line-height: 1.8;
-    }
-    .header-meta strong {
-      color: #4b5563;
-      font-weight: 600;
+      color: var(--ink4);
+      margin-right: 4px;
     }
 
-    /* ── Job dot list ── */
-    .jobs-row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 12px;
-      margin-bottom: 36px;
-      padding: 14px 18px;
-      background: #f8f8fc;
-      border-radius: 12px;
-      border: 1px solid #e8e8f0;
-    }
-    .jobs-row-label {
-      font-size: 9px;
-      font-weight: 700;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      color: #9ca3af;
-      width: 100%;
-      margin-bottom: 4px;
-    }
-    .job-dot-item {
-      display: flex;
+    .job-pill {
+      display: inline-flex;
       align-items: center;
-      gap: 7px;
-      font-size: 11px;
-      font-weight: 600;
-      color: #374151;
+      gap: 6px;
+      padding: 4px 12px 4px 8px;
+      background: var(--white);
+      border: 1px solid var(--line);
+      border-radius: 100px;
+      font-size: 10.5px;
+      font-weight: 500;
+      color: var(--ink2);
     }
-    .dot {
-      width: 10px;
-      height: 10px;
+
+    .pill-dot {
+      width: 8px;
+      height: 8px;
       border-radius: 50%;
-      display: inline-block;
       flex-shrink: 0;
     }
 
-    /* ── Scope + CPF info strip ── */
-    .meta-strip {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-bottom: 32px;
-    }
-    .meta-chip {
-      font-size: 10px;
-      font-weight: 500;
-      color: #4b5563;
-      background: #f3f4f6;
-      border: 1px solid #e5e7eb;
-      border-radius: 100px;
-      padding: 4px 12px;
-    }
-    .meta-chip.indigo {
-      background: #eef2ff;
-      border-color: #c7d2fe;
-      color: #4338ca;
-    }
-
-    /* ── Job section ── */
-    .job-section {
-      margin-bottom: 44px;
-      padding: 24px;
-      border: 1.5px solid #e8e8f0;
+    /* ── JOB CARD ───────────────────────────────────────── */
+    .job-card {
+      background: var(--white);
+      border: 1px solid var(--line);
       border-radius: 16px;
+      overflow: hidden;
+      margin-bottom: 24px;
       page-break-inside: avoid;
-    }
-    .job-section::before {
-      content: '';
-      display: block;
-      height: 3px;
-      background: var(--job-color);
-      border-radius: 2px;
-      margin-bottom: 20px;
-      margin-left: -24px;
-      margin-right: -24px;
-      margin-top: -24px;
-      border-radius: 14px 14px 0 0;
+      border-left: 3.5px solid var(--accent);
     }
 
-    .job-header {
-      margin-bottom: 18px;
+    .job-card-header {
+      padding: 20px 24px 16px;
+      border-bottom: 1px solid var(--line2);
     }
-    .job-title-row {
+
+    .job-name-row {
       display: flex;
       align-items: center;
       gap: 10px;
       margin-bottom: 10px;
     }
+
     .job-dot {
-      width: 12px;
-      height: 12px;
+      width: 10px;
+      height: 10px;
       border-radius: 50%;
       flex-shrink: 0;
     }
-    .job-title {
-      font-size: 16px;
+
+    .job-name {
+      font-size: 17px;
       font-weight: 700;
-      color: #0f0f23;
+      color: var(--ink);
+      letter-spacing: -0.02em;
     }
-    .job-cycle-note {
-      font-size: 9px;
-      color: #9ca3af;
-      font-weight: 500;
-      margin-left: auto;
-    }
-    .job-summary-pills {
+
+    .job-meta-row {
       display: flex;
+      flex-wrap: wrap;
       gap: 8px;
     }
-    .pill {
-      font-size: 10px;
-      font-weight: 600;
-      background: #f3f4f6;
-      color: #4b5563;
-      border-radius: 100px;
+
+    .meta-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
       padding: 3px 10px;
-      border: 1px solid #e5e7eb;
-    }
-    .gross-pill {
-      background: #f0fdf4;
-      color: #15803d;
-      border-color: #bbf7d0;
-    }
-
-    /* ── No shifts ── */
-    .no-shifts {
-      color: #9ca3af;
-      font-style: italic;
-      font-size: 11px;
-      margin: 12px 0;
+      background: var(--line2);
+      border-radius: 6px;
+      font-size: 10px;
+      color: var(--ink2);
+      font-weight: 500;
     }
 
-    /* ── Shift table ── */
+    .meta-tag-label {
+      font-size: 9px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--ink4);
+    }
+
+    /* ── SUMMARY STRIP ──────────────────────────────────── */
+    .summary-strip {
+      display: flex;
+      align-items: center;
+      padding: 14px 24px;
+      border-bottom: 1px solid var(--line2);
+      gap: 0;
+    }
+
+    .summary-item {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .summary-label {
+      font-size: 9px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--ink4);
+    }
+
+    .summary-value {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--ink);
+      font-variant-numeric: tabular-nums;
+      font-family: var(--mono);
+    }
+
+    .eff-rate { color: var(--indigo); }
+
+    .summary-divider {
+      width: 1px;
+      height: 36px;
+      background: var(--line);
+      margin: 0 20px;
+      flex-shrink: 0;
+    }
+
+    /* ── HOURS NOTE ─────────────────────────────────────── */
+    .hours-note {
+      padding: 8px 24px;
+      background: #fffbeb;
+      border-bottom: 1px solid #fde68a;
+    }
+
+    .hours-detail {
+      font-size: 10px;
+      color: #92400e;
+      font-weight: 500;
+    }
+
+    /* ── SHIFT TABLE ────────────────────────────────────── */
+    .shift-table-wrap {
+      padding: 0 24px;
+      border-bottom: 1px solid var(--line2);
+    }
+
     .shift-table {
       width: 100%;
       border-collapse: collapse;
-      margin-bottom: 20px;
-      font-size: 10.5px;
     }
+
     .shift-table thead tr {
-      background: #f8f8fc;
+      border-bottom: 1px solid var(--line);
     }
+
     .shift-table th {
-      text-align: left;
-      padding: 8px 10px;
-      font-size: 9px;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: #9ca3af;
-      border-bottom: 1px solid #e8e8f0;
-    }
-    .shift-table td {
-      padding: 8px 10px;
-      border-bottom: 1px solid #f3f4f6;
-      color: #374151;
-    }
-    .shift-table tbody tr:last-child td { border-bottom: none; }
-    .shift-table tbody tr:hover { background: #fafafa; }
-    .num { text-align: right; font-variant-numeric: tabular-nums; }
-    .bold { font-weight: 700; }
-
-    /* ── Notes row ── */
-    .notes-row td {
-      padding: 3px 10px 8px;
-      font-size: 9.5px;
-      color: #9ca3af;
-      border-bottom: 1px solid #f3f4f6;
-      font-style: italic;
-    }
-    .note-label { font-weight: 600; color: #d1d5db; }
-
-    /* ── Badges ── */
-    .badge {
-      display: inline-block;
-      padding: 2px 8px;
-      border-radius: 100px;
-      font-size: 9px;
-      font-weight: 700;
-      letter-spacing: 0.04em;
-    }
-    .badge-wd  { background: #f3f4f6; color: #6b7280; }
-    .badge-wkd { background: #fff7ed; color: #c2410c; }
-    .badge-ph  { background: #fef3c7; color: #b45309; }
-
-    /* ── Calc section ── */
-    .calc-section {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 16px;
-      margin-top: 4px;
-    }
-    .calc-heading {
+      padding: 10px 8px 8px;
       font-size: 9px;
       font-weight: 700;
       letter-spacing: 0.1em;
       text-transform: uppercase;
-      color: #9ca3af;
-      margin-bottom: 10px;
-    }
-    .calc-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 10.5px;
-    }
-    .calc-table th {
+      color: var(--ink4);
       text-align: left;
-      font-size: 9px;
-      font-weight: 600;
-      color: #9ca3af;
-      padding: 5px 8px;
-      border-bottom: 1px solid #e8e8f0;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-    }
-    .calc-table td {
-      padding: 6px 8px;
-      color: #374151;
-      border-bottom: 1px solid #f3f4f6;
-    }
-    .calc-table tfoot td {
-      border-top: 1.5px solid #e8e8f0;
-      border-bottom: none;
-      padding-top: 8px;
-      font-weight: 700;
-      color: #111827;
     }
 
-    /* ── CPF box ── */
-    .cpf-box {
-      background: #f8f8fc;
-      border: 1px solid #e8e8f0;
-      border-radius: 10px;
-      padding: 14px 16px;
+    .shift-table th.num { text-align: right; }
+
+    .shift-row td {
+      padding: 9px 8px;
+      border-bottom: 1px solid var(--line2);
+      vertical-align: middle;
     }
-    .cpf-row {
+
+    .shift-row:last-of-type td { border-bottom: none; }
+    .shift-row:hover td { background: #fafbff; }
+
+    .num { text-align: right; font-variant-numeric: tabular-nums; }
+
+    .date-cell {
+      white-space: nowrap;
+    }
+
+    .date-day {
+      font-size: 9px;
+      font-weight: 700;
+      text-transform: uppercase;
+      color: var(--ink4);
+      margin-right: 5px;
+      letter-spacing: 0.06em;
+    }
+
+    .date-full {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--ink2);
+    }
+
+    .time-cell {
+      font-family: var(--mono);
+      font-size: 10.5px;
+      color: var(--ink2);
+    }
+
+    .time-sep { color: var(--ink4); margin: 0 2px; }
+
+    .break-note {
+      display: inline-block;
+      margin-left: 6px;
+      font-size: 9px;
+      color: var(--ink4);
+      background: var(--line2);
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-family: 'DM Sans', sans-serif;
+    }
+
+    .rate-cell {
+      font-family: var(--mono);
+      font-size: 10.5px;
+      color: var(--ink3);
+    }
+
+    .rate-unit {
+      font-size: 9px;
+      color: var(--ink4);
+    }
+
+    .gross-cell {
+      font-family: var(--mono);
+      font-weight: 600;
+      color: var(--ink);
+    }
+
+    /* ── BADGES ─────────────────────────────────────────── */
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 5px;
+      font-size: 9.5px;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+    }
+
+    .badge-wd  { background: #f3f4f6; color: #6b7280; }
+    .badge-wkd { background: #fff3e0; color: #c2410c; }
+    .badge-ph  { background: #fef9c3; color: #a16207; }
+
+    /* ── NOTE ROW ───────────────────────────────────────── */
+    .note-row td {
+      padding: 0 8px 8px 8px;
+      font-size: 10px;
+      color: var(--ink4);
+      font-style: italic;
+      border-bottom: 1px solid var(--line2);
+    }
+
+    .note-icon {
+      margin-right: 5px;
+      font-style: normal;
+      color: var(--ink4);
+    }
+
+    .no-shifts {
+      padding: 20px 24px;
+      font-size: 11px;
+      color: var(--ink4);
+      font-style: italic;
+      border-bottom: 1px solid var(--line2);
+    }
+
+    /* ── BOTTOM GRID ────────────────────────────────────── */
+    .bottom-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0;
+    }
+
+    .breakdown-col {
+      padding: 20px 24px;
+      border-right: 1px solid var(--line2);
+    }
+
+    .cpf-col {
+      padding: 20px 24px;
+    }
+
+    .col-heading {
+      font-size: 9px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--ink4);
+      margin-bottom: 14px;
+    }
+
+    /* Calc lines */
+    .calc-lines {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+
+    .calc-line {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      font-size: 10.5px;
+    }
+
+    .calc-label {
+      color: var(--ink3);
+      flex: 0 0 100px;
+    }
+
+    .calc-equation {
+      color: var(--ink4);
+      font-family: var(--mono);
+      font-size: 10px;
+      flex: 1;
+    }
+
+    .calc-val {
+      font-family: var(--mono);
+      font-weight: 600;
+      color: var(--ink2);
+      text-align: right;
+      min-width: 72px;
+    }
+
+    .calc-val.positive { color: var(--green); }
+    .calc-val.negative { color: var(--red); }
+
+    .calc-total-line {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      font-size: 10.5px;
-      padding: 4px 0;
-      color: #374151;
-    }
-    .cpf-val { font-weight: 600; font-variant-numeric: tabular-nums; }
-    .cpf-row.employee .cpf-val { color: #dc2626; }
-    .cpf-row.employer .cpf-val { color: #6366f1; font-size: 10px; }
-    .cpf-row.employer { opacity: 0.75; }
-    .cpf-row.net { margin-top: 2px; }
-    .cpf-row.net span:first-child { font-weight: 700; color: #111827; }
-    .cpf-val.net-val { font-size: 13px; color: #15803d; font-weight: 800; }
-    .negative { color: #dc2626; }
-    .positive { color: #6366f1; }
-    .cpf-divider { border-top: 1.5px solid #e8e8f0; margin: 8px 0; }
-    .cpf-note {
-      font-size: 9px;
-      color: #9ca3af;
-      margin-top: 10px;
-      padding-top: 8px;
-      border-top: 1px dashed #e5e7eb;
-      line-height: 1.5;
+      padding-top: 10px;
+      border-top: 1.5px solid var(--line);
+      font-weight: 700;
+      font-size: 11px;
+      color: var(--ink);
+      font-family: var(--mono);
     }
 
-    /* ── Grand total ── */
-    .grand-total-section {
-      margin-top: 8px;
-      padding: 24px;
-      background: #0f0f23;
+    /* CPF stack */
+    .cpf-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+
+    .cpf-line {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 7px 0;
+      font-size: 10.5px;
+      border-bottom: 1px solid var(--line2);
+    }
+
+    .cpf-line:last-of-type { border-bottom: none; }
+
+    .cpf-gross { color: var(--ink2); }
+    .cpf-emp   { color: var(--ink3); }
+
+    .cpf-net {
+      padding: 10px 0 8px;
+      border-bottom: none;
+    }
+
+    .cpf-net span:first-child {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--ink);
+    }
+
+    .take-home {
+      font-size: 20px;
+      font-weight: 800;
+      color: var(--green);
+      font-family: var(--mono);
+      letter-spacing: -0.02em;
+    }
+
+    .neg { color: var(--red); font-family: var(--mono); font-weight: 600; }
+
+    .cpf-rate-badge {
+      display: inline-block;
+      background: #fee2e2;
+      color: #991b1b;
+      font-size: 9px;
+      font-weight: 700;
+      padding: 1px 5px;
+      border-radius: 4px;
+      margin-left: 4px;
+    }
+
+    .cpf-employer-note {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 10px;
+      padding: 8px 10px;
+      background: #eef2ff;
+      border-radius: 8px;
+      border: 1px solid #c7d2fe;
+    }
+
+    .empr-label {
+      font-size: 9.5px;
+      font-weight: 600;
+      color: #4338ca;
+    }
+
+    .empr-val {
+      font-size: 10px;
+      font-weight: 700;
+      color: #4338ca;
+      font-family: var(--mono);
+    }
+
+    /* ── GRAND TOTAL ────────────────────────────────────── */
+    .grand-card {
+      background: var(--ink);
       border-radius: 16px;
-      color: white;
+      padding: 28px 32px;
+      margin-bottom: 24px;
       page-break-inside: avoid;
     }
-    .grand-title {
-      font-size: 13px;
-      font-weight: 700;
-      color: #e5e7eb;
-      letter-spacing: 0.04em;
-      margin-bottom: 18px;
+
+    .grand-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 22px;
     }
+
+    .grand-label {
+      font-size: 9.5px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #6b7280;
+    }
+
+    .grand-month {
+      font-size: 11px;
+      font-weight: 600;
+      color: #9ca3af;
+    }
+
     .grand-grid {
       display: grid;
       grid-template-columns: repeat(5, 1fr);
-      gap: 12px;
+      gap: 16px;
     }
-    .grand-card {
-      background: rgba(255,255,255,0.06);
-      border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 10px;
-      padding: 12px 14px;
+
+    .grand-item {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
     }
-    .grand-label {
+
+    .grand-item-label {
       font-size: 9px;
-      font-weight: 600;
+      font-weight: 700;
       text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: #9ca3af;
-      margin-bottom: 6px;
+      letter-spacing: 0.1em;
+      color: #6b7280;
     }
-    .grand-value {
-      font-size: 14px;
+
+    .grand-item-val {
+      font-size: 16px;
       font-weight: 800;
       color: #f9fafb;
-      font-variant-numeric: tabular-nums;
+      font-family: var(--mono);
+      letter-spacing: -0.01em;
     }
-    .grand-value.negative { color: #fca5a5; }
-    .grand-value.positive { color: #a5b4fc; }
-    .grand-value.net      { color: #6ee7b7; }
-    .net-card { background: rgba(16, 185, 129, 0.12); border-color: rgba(16,185,129,0.3); }
 
-    /* ── Footer ── */
+    .neg-light   { color: #fca5a5; }
+    .indigo-light { color: #a5b4fc; }
+    .grand-net   { color: #6ee7b7; font-size: 20px; }
+
+    .grand-net-item {
+      padding-left: 16px;
+      border-left: 1px solid #374151;
+    }
+
+    /* ── FOOTER ─────────────────────────────────────────── */
     .footer {
-      margin-top: 48px;
-      padding-top: 20px;
-      border-top: 1px solid #e8e8f0;
       display: flex;
       justify-content: space-between;
       align-items: center;
-    }
-    .footer-left {
-      font-size: 9px;
-      color: #d1d5db;
-    }
-    .footer-right {
-      font-size: 9px;
-      color: #d1d5db;
-      text-align: right;
+      padding-top: 20px;
+      border-top: 1px solid var(--line);
+      margin-top: 8px;
     }
 
-    /* ── Print ── */
+    .footer-left, .footer-right {
+      font-size: 9px;
+      color: #d1d5db;
+      line-height: 1.5;
+    }
+
+    .footer-right { text-align: right; }
+
+    /* ── PRINT ──────────────────────────────────────────── */
     @media print {
       body { background: white; }
-      .page { padding: 32px; }
-      .job-section { page-break-inside: avoid; }
-      .grand-total-section { page-break-inside: avoid; }
-      @page { margin: 0.5in; size: A4; }
+      .page { padding: 32px 36px 48px; }
+      .job-card, .grand-card { page-break-inside: avoid; }
+
+      @page {
+        size: A4;
+        margin: 0.4in 0.5in;
+
+        @bottom-right {
+          content: "Page " counter(page) " of " counter(pages);
+          font-size: 8px;
+          color: #9ca3af;
+          font-family: 'DM Sans', sans-serif;
+        }
+      }
     }
   </style>
 </head>
@@ -649,47 +978,42 @@ export function renderPayslipHTML(opts: RenderOptions): string {
   <div class="page">
 
     <!-- Header -->
-    <div class="header">
+    <div class="top-header">
       <div class="header-left">
-        <div class="header-badge">Payslip</div>
-        <h1 class="header-title">${monthLabel}</h1>
-        <p class="header-subtitle">Singapore Part-Time Payroll</p>
+        <div class="payslip-label">Payslip</div>
+        <h1 class="month-title">${monthLabel}</h1>
+        <p class="header-sub">Singapore Part-Time Payroll</p>
       </div>
       <div class="header-right">
-        <div class="header-meta">
-          <div><strong>Generated</strong></div>
-          <div>${generatedAt}</div>
-          <div style="margin-top:8px"><strong>CPF Age Group</strong></div>
-          <div>${cpfRates.label}</div>
-          <div style="margin-top:8px"><strong>Rates effective</strong></div>
-          <div>${CPF_RATES_EFFECTIVE_DATE}</div>
+        <div class="header-meta-row">
+          <div class="meta-line"><strong>Generated</strong> ${generatedAt}</div>
+          <div class="meta-line"><strong>CPF Age Group</strong> ${cpfRates.label}</div>
+          <div class="meta-line"><strong>Rates</strong> effective ${CPF_RATES_EFFECTIVE_DATE}</div>
+          <div class="meta-line"><strong>Scope</strong> ${scope === 'payroll_cycle' ? 'Payroll Cycle' : 'Calendar Month'}</div>
         </div>
       </div>
     </div>
 
-    <!-- Jobs included -->
+    <!-- Job pills -->
     <div class="jobs-row">
-      <div class="jobs-row-label">Jobs included</div>
-      ${jobDotList}
+      <span class="jobs-row-label">Jobs</span>
+      ${jobPills}
     </div>
 
-    <!-- Meta chips -->
-    <div class="meta-strip">
-      <span class="meta-chip indigo">Scope: ${scopeLabel}</span>
-      <span class="meta-chip">Employee CPF: ${(cpfRates.employee * 100).toFixed(1)}%</span>
-      <span class="meta-chip">Employer CPF: ${(cpfRates.employer * 100).toFixed(1)}%</span>
-    </div>
-
-    <!-- Job sections -->
+    <!-- Job cards -->
     ${jobSections}
 
-    <!-- Grand total (only if multiple jobs) -->
-    ${grandTotalSection}
+    <!-- Grand total -->
+    ${grandSection}
 
     <!-- Footer -->
     <div class="footer">
-      <div class="footer-left">Generated by SG Part-Time Payroll Calculator · ${generatedAt}</div>
-      <div class="footer-right">This is a self-generated record, not an official payslip.</div>
+      <div class="footer-left">
+        Generated by SG Part-Time Payroll Calculator · ${generatedAt}
+      </div>
+      <div class="footer-right">
+        This is a self-generated record and not an official payslip issued by an employer.
+      </div>
     </div>
 
   </div>
